@@ -47,7 +47,7 @@ pub trait Cache: Send + Sync {
     async fn size(&self) -> usize;
 }
 
-/// Two-tier cache: memory + disk
+/// Two-tier cache: memory and disk
 pub struct TieredCache {
     memory: MemoryCache,
     disk: DiskCache,
@@ -99,7 +99,7 @@ impl TieredCache {
             self.disk.put(key.clone(), entry.clone()).await?;
         }
 
-        // Try to fit in memory cache
+        // Try to fit in a memory cache
         self.memory.put(key, entry).await?;
         Ok(())
     }

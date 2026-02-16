@@ -36,7 +36,7 @@ impl DiskCache {
             index: RwLock::new(HashMap::new()),
         };
 
-        // Build index from existing cache
+        // Build index from the existing cache
         cache.rebuild_index().await?;
 
         Ok(cache)
@@ -101,7 +101,7 @@ impl DiskCache {
             return Ok(());
         }
 
-        // Simple eviction: find and remove oldest files until we have space
+        // Simple eviction: find and remove the oldest files until we have space
         let target_size = self.max_size.saturating_sub(needed_size);
         let _to_remove: Vec<PathBuf> = Vec::new();
 
@@ -132,7 +132,7 @@ impl DiskCache {
         // Sort by modification time (oldest first)
         files.sort_by_key(|(_, time)| *time);
 
-        // Remove oldest files until we reach target
+        // Remove the oldest files until we reach the target
         for (path, _) in files {
             if current_size <= target_size {
                 break;
@@ -254,7 +254,7 @@ impl Cache for DiskCache {
         // Remove old entry if exists
         let old_size = self.remove_entry(&key).await.unwrap_or(0);
 
-        // Write new entry
+        // Write the new entry
         let new_size = self.write_entry(&key, &entry).await?;
 
         // Update size tracking
@@ -357,7 +357,7 @@ mod tests {
             cache.put(key.clone(), entry).await.unwrap();
         }
 
-        // Create new cache instance with same directory
+        // Create a new cache instance with the same directory
         let cache = DiskCache::new(temp_dir.path().to_path_buf(), 10 * 1024 * 1024)
             .await
             .unwrap();

@@ -153,8 +153,7 @@ impl ProxyHandler {
 
         Ok(Response::builder()
             .status(StatusCode::OK)
-            .body(Full::new(Bytes::new()))
-            .unwrap())
+            .body(Full::new(Bytes::new()))?)
     }
 
     async fn handle_cacheable_request(
@@ -218,7 +217,7 @@ impl ProxyHandler {
         // Add Via header
         new_req.headers_mut().insert(
             "via",
-            format!("1.1 squiddish").parse().unwrap(),
+            "1.1 squiddish".to_string().parse().unwrap(),
         );
 
         // Forward request

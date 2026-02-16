@@ -1,0 +1,46 @@
+version: '3.8'
+
+services:
+  squiddish:
+    build: .
+    image: ghcr.io/phrontizo/squiddish:latest
+    container_name: squiddish-proxy
+    ports:
+      - "3128:3128"
+    volumes:
+      - ./cache:/cache
+    environment:
+      # Bind address (0.0.0.0 to accept connections from outside container)
+      SQUIDDISH_BIND_ADDR: "0.0.0.0:3128"
+
+      # Cache settings
+      SQUIDDISH_MEMORY_SIZE: "1073741824"        # 1GB
+      SQUIDDISH_DISK_SIZE: "107374182400"        # 100GB
+      SQUIDDISH_CACHE_DIR: "/cache"
+      SQUIDDISH_COMPRESSION: "true"
+      SQUIDDISH_TTL_SECONDS: "604800"            # 7 days
+
+      # APT settings
+      SQUIDDISH_APT_ENABLED: "true"
+      SQUIDDISH_APT_LIST_TTL: "3600"             # 1 hour
+
+      # Security settings
+      SQUIDDISH_MAX_BODY_SIZE: "10737418240"     # 10GB
+      SQUIDDISH_MAX_CONNECTIONS: "1000"
+      SQUIDDISH_TIMEOUT_SECONDS: "300"           # 5 minutes
+      SQUIDDISH_STRICT_HTTPS: "true"
+
+      # Host filtering (comma-separated, leave empty to allow all)
+      # SQUIDDISH_ALLOWED_HOSTS: "ubuntu.com,debian.org"
+      # SQUIDDISH_BLOCKED_HOSTS: "malicious.com"
+
+      # Logging
+      RUST_LOG: "squiddish=info"
+
+    restart: unless-stopped
+
+    healthcheck:
+      test: ["CMD", "sh", "-c", "netstat -an | grep 3128"]
+      interval: 30s
+      timeout: 10s
+      retries: 3

@@ -174,6 +174,97 @@ impl Config {
         let config: Config = toml::from_str(&contents)?;
         Ok(config)
     }
+
+    /// Load config from environment variables with SQUIDDISH_ prefix
+    pub fn from_env() -> Self {
+        let mut config = Self::default();
+
+        // Bind address
+        if let Ok(addr) = std::env::var("SQUIDDISH_BIND_ADDR") {
+            if let Ok(parsed) = addr.parse() {
+                config.bind_addr = parsed;
+            }
+        }
+
+        // Cache config
+        if let Ok(size) = std::env::var("SQUIDDISH_MEMORY_SIZE") {
+            if let Ok(parsed) = size.parse() {
+                config.cache.memory_size = parsed;
+            }
+        }
+
+        if let Ok(size) = std::env::var("SQUIDDISH_DISK_SIZE") {
+            if let Ok(parsed) = size.parse() {
+                config.cache.disk_size = parsed;
+            }
+        }
+
+        if let Ok(dir) = std::env::var("SQUIDDISH_CACHE_DIR") {
+            config.cache.cache_dir = dir.into();
+        }
+
+        if let Ok(compression) = std::env::var("SQUIDDISH_COMPRESSION") {
+            config.cache.compression = compression.parse().unwrap_or(true);
+        }
+
+        if let Ok(ttl) = std::env::var("SQUIDDISH_TTL_SECONDS") {
+            if let Ok(parsed) = ttl.parse() {
+                config.cache.ttl_seconds = parsed;
+            }
+        }
+
+        // APT config
+        if let Ok(enabled) = std::env::var("SQUIDDISH_APT_ENABLED") {
+            config.apt.enabled = enabled.parse().unwrap_or(true);
+        }
+
+        if let Ok(ttl) = std::env::var("SQUIDDISH_APT_LIST_TTL") {
+            if let Ok(parsed) = ttl.parse() {
+                config.apt.list_ttl_seconds = parsed;
+            }
+        }
+
+        // Security config
+        if let Ok(size) = std::env::var("SQUIDDISH_MAX_BODY_SIZE") {
+            if let Ok(parsed) = size.parse() {
+                config.security.max_body_size = parsed;
+            }
+        }
+
+        if let Ok(conns) = std::env::var("SQUIDDISH_MAX_CONNECTIONS") {
+            if let Ok(parsed) = conns.parse() {
+                config.security.max_connections = parsed;
+            }
+        }
+
+        if let Ok(timeout) = std::env::var("SQUIDDISH_TIMEOUT_SECONDS") {
+            if let Ok(parsed) = timeout.parse() {
+                config.security.timeout_seconds = parsed;
+            }
+        }
+
+        if let Ok(strict) = std::env::var("SQUIDDISH_STRICT_HTTPS") {
+            config.security.strict_https = strict.parse().unwrap_or(true);
+        }
+
+        if let Ok(hosts) = std::env::var("SQUIDDISH_ALLOWED_HOSTS") {
+            config.security.allowed_hosts = hosts
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        if let Ok(hosts) = std::env::var("SQUIDDISH_BLOCKED_HOSTS") {
+            config.security.blocked_hosts = hosts
+                .split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+        }
+
+        config
+    }
 }
 
 #[cfg(test)]

@@ -1,0 +1,32 @@
+# Build artifacts
+target/
+cache/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Config (use env vars in Docker)
+config.toml
+
+# Documentation
+*.md
+
+# CI/CD
+.github/
+
+# Temporary files
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Lock file (will be generated during build)
+Cargo.lock

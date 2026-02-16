@@ -40,10 +40,7 @@ impl ProxyHandler {
             Ok(response) => Ok(response),
             Err(e) => {
                 tracing::error!("Proxy error: {}", e);
-                Ok(Response::builder()
-                    .status(StatusCode::BAD_GATEWAY)
-                    .body(Full::new(Bytes::from(format!("Proxy Error: {}", e))))
-                    .unwrap())
+                Ok(self.build_error_page(&e))
             }
         }
     }
@@ -310,6 +307,87 @@ impl ProxyHandler {
         tracing::debug!("Cached response for {}", key.uri());
 
         Ok(())
+    }
+
+    fn build_error_page(&self, error: &ProxyError) -> Response<Full<Bytes>> {
+        let error_html = format!(
+            r#"<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <title>Squiddish Proxy Error</title>
+    <style>
+        body {{
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+            background: #f5f5f5;
+        }}
+        .error-container {{
+            background: white;
+            border-radius: 8px;
+            padding: 30px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+        }}
+        h1 {{
+            color: #d32f2f;
+            margin-top: 0;
+        }}
+        .error-code {{
+            font-family: monospace;
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 4px;
+            margin: 20px 0;
+            word-wrap: break-word;
+        }}
+        .info {{
+            color: #666;
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }}
+        .timestamp {{
+            color: #999;
+            font-size: 0.9em;
+        }}
+    </style>
+</head>
+<body>
+    <div class="error-container">
+        <h1>🦑 Squiddish Proxy Error</h1>
+        <p>The proxy encountered an error while processing your request.</p>
+
+        <div class="error-code">
+            <strong>Error:</strong> {}
+        </div>
+
+        <div class="info">
+            <p><strong>What happened?</strong></p>
+            <p>The proxy was unable to complete your request. This could be due to:</p>
+            <ul>
+                <li>The remote server being unreachable</li>
+                <li>Network connectivity issues</li>
+                <li>Invalid request format</li>
+                <li>Cache system errors</li>
+            </ul>
+
+            <p class="timestamp">Client: {} | Time: {}</p>
+        </div>
+    </div>
+</body>
+</html>"#,
+            error,
+            self.peer_addr,
+            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+        );
+
+        Response::builder()
+            .status(StatusCode::BAD_GATEWAY)
+            .header("content-type", "text/html; charset=utf-8")
+            .body(Full::new(Bytes::from(error_html)))
+            .unwrap()
     }
 }
 

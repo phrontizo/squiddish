@@ -4,7 +4,7 @@ mod client;
 
 use crate::cache::TieredCache;
 use crate::config::Config;
-use crate::error::{ProxyError, Result};
+use crate::error::Result;
 use handler::ProxyHandler;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;

@@ -41,7 +41,9 @@ pub trait Cache: Send + Sync {
     async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>>;
     async fn put(&self, key: CacheKey, entry: CacheEntry) -> Result<()>;
     async fn remove(&self, key: &CacheKey) -> Result<()>;
+    #[allow(dead_code)]
     async fn clear(&self) -> Result<()>;
+    #[allow(dead_code)]
     async fn size(&self) -> usize;
 }
 
@@ -102,12 +104,14 @@ impl TieredCache {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn remove(&self, key: &CacheKey) -> Result<()> {
         let _ = self.memory.remove(key).await;
         let _ = self.disk.remove(key).await;
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub async fn stats(&self) -> CacheStats {
         CacheStats {
             memory_size: self.memory.size().await,
@@ -116,6 +120,7 @@ impl TieredCache {
     }
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub struct CacheStats {
     pub memory_size: usize,

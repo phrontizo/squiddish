@@ -31,6 +31,7 @@ impl CacheKey {
         }
     }
 
+    #[allow(dead_code)]
     pub fn hash(&self) -> &[u8; 32] {
         &self.hash
     }

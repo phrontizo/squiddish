@@ -44,7 +44,7 @@ impl DiskCache {
 
     async fn rebuild_index(&self) -> Result<()> {
         let mut total_size = 0u64;
-        let mut index = HashMap::new();
+        let index = HashMap::new();
 
         // Walk the cache directory
         let mut stack = vec![self.cache_dir.clone()];
@@ -77,7 +77,7 @@ impl DiskCache {
 
                         // Try to read metadata to get the key
                         if let Ok(meta_content) = fs::read(&path).await {
-                            if let Ok(meta) = serde_json::from_slice::<DiskCacheMetadata>(&meta_content) {
+                            if let Ok(_meta) = serde_json::from_slice::<DiskCacheMetadata>(&meta_content) {
                                 // We need to reconstruct the key somehow - for now just track size
                                 // In a production system, we'd store the key in metadata
                             }
@@ -103,7 +103,7 @@ impl DiskCache {
 
         // Simple eviction: find and remove oldest files until we have space
         let target_size = self.max_size.saturating_sub(needed_size);
-        let mut to_remove: Vec<PathBuf> = Vec::new();
+        let _to_remove: Vec<PathBuf> = Vec::new();
 
         // Collect files with their modification times
         let mut stack = vec![self.cache_dir.clone()];

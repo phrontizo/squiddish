@@ -28,7 +28,7 @@ pub async fn handle_connect_tunnel(
     tracing::debug!("Connected to target {}", target_addr);
 
     // Wrap upgraded connection for async IO
-    let mut upgraded_io = TokioIo::new(upgraded);
+    let upgraded_io = TokioIo::new(upgraded);
 
     // Split both streams
     let (mut client_reader, mut client_writer) = tokio::io::split(upgraded_io);
@@ -95,8 +95,6 @@ pub async fn handle_connect_tunnel(
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn test_tunnel_module() {
         // Basic module test

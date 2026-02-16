@@ -97,6 +97,7 @@ pub struct AptConfig {
     pub enabled: bool,
 
     /// APT repositories to cache
+    #[allow(dead_code)]
     pub repositories: Vec<String>,
 
     /// Cache package lists longer (default: 1 hour)
@@ -174,6 +175,7 @@ fn default_timeout() -> u64 {
     300 // 5 minutes
 }
 
+#[allow(dead_code)]
 fn default_true() -> bool {
     true
 }

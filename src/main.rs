@@ -9,6 +9,12 @@ use config::Config;
 use proxy::ProxyServer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+async fn get_external_ip() -> Result<String> {
+    let response = reqwest::get("https://api.ipify.org").await?;
+    let ip = response.text().await?;
+    Ok(ip)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     tracing_subscriber::registry()
@@ -21,6 +27,11 @@ async fn main() -> Result<()> {
 
     // Load configuration from environment variables
     let config = Config::from_env();
+
+    // Log external IP address
+    if let Ok(ip) = get_external_ip().await {
+        tracing::info!("External IP address: {}", ip);
+    }
 
     let server = ProxyServer::new(config).await?;
     server.run().await?;

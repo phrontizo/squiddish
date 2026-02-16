@@ -164,12 +164,15 @@ impl ProxyHandler {
         let cache_key = self.create_cache_key(&req);
 
         // Check cache
+        let is_apt = crate::apt::is_apt_request(req.uri().to_string().as_str());
+        let cache_type = if is_apt { "[APT]" } else { "[HTTP]" };
+
         if let Some(entry) = self.cache.get(&cache_key).await? {
-            tracing::info!("Cache HIT: {}", req.uri());
+            tracing::info!("{} Cache HIT: {}", cache_type, req.uri());
             return Ok(build_response_from_cache(entry));
         }
 
-        tracing::info!("Cache MISS: {}", req.uri());
+        tracing::info!("{} Cache MISS: {}", cache_type, req.uri());
 
         // Forward request
         let response = self.forward_request(req).await?;

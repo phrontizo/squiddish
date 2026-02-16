@@ -21,6 +21,7 @@ pub enum ProxyError {
     Cache(String),
 
     #[error("Configuration error: {0}")]
+    #[allow(dead_code)]
     Config(String),
 
     #[error("Tunnel error: {0}")]

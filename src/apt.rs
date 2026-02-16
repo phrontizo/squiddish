@@ -22,12 +22,14 @@ pub fn is_apt_request(uri: &str) -> bool {
 }
 
 /// Determine if an APT request is a package list (should be cached shorter)
+#[allow(dead_code)]
 pub fn is_apt_package_list(uri: &str) -> bool {
     let list_patterns = ["Packages.gz", "Packages.xz", "Release", "InRelease"];
     list_patterns.iter().any(|pattern| uri.contains(pattern))
 }
 
 /// Determine if an APT request is a package file (can be cached longer)
+#[allow(dead_code)]
 pub fn is_apt_package_file(uri: &str) -> bool {
     uri.ends_with(".deb")
 }

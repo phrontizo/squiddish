@@ -1,19 +1,35 @@
 # Multi-stage build for Squiddish caching proxy
 # Uses musl for static linking to create a minimal scratch-based image
-FROM rust:1.83-alpine as builder
+# Supports multi-arch: linux/amd64, linux/arm64
+
+FROM --platform=$BUILDPLATFORM rust:1.83-alpine as builder
+
+# Build arguments for cross-compilation
+ARG TARGETPLATFORM
+ARG BUILDPLATFORM
 
 WORKDIR /build
 
 # Install musl build tools for static linking
 RUN apk add --no-cache musl-dev
 
+# Determine the Rust target based on platform
+RUN case "$TARGETPLATFORM" in \
+    "linux/amd64") echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
+    "linux/arm64") echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
+    *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
+    esac && \
+    export RUST_TARGET=$(cat /tmp/rust-target) && \
+    rustup target add $RUST_TARGET
+
 # Copy manifests
 COPY Cargo.toml ./
 
 # Create dummy main to build dependencies
-RUN mkdir src && \
+RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
+    mkdir src && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release --target x86_64-unknown-linux-musl && \
+    cargo build --release --target $RUST_TARGET && \
     rm -rf src
 
 # Copy source code
@@ -21,9 +37,11 @@ COPY src ./src
 COPY tests ./tests
 
 # Build the actual binary with static linking
-RUN touch src/main.rs && \
-    cargo build --release --target x86_64-unknown-linux-musl && \
-    strip target/x86_64-unknown-linux-musl/release/squiddish
+RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
+    touch src/main.rs && \
+    cargo build --release --target $RUST_TARGET && \
+    strip target/$RUST_TARGET/release/squiddish && \
+    cp target/$RUST_TARGET/release/squiddish /build/squiddish
 
 # Runtime stage - from scratch for minimal image
 FROM scratch
@@ -32,7 +50,7 @@ FROM scratch
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
 # Copy the statically linked binary
-COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/squiddish /squiddish
+COPY --from=builder /build/squiddish /squiddish
 
 # Environment variables with defaults
 # Size units: B, KB, MB, GB, TB (e.g., "1GB", "512MB", "2.5GB")

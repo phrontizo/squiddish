@@ -35,17 +35,20 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/squiddish /squiddish
 
 # Environment variables with defaults
+# Size units: B, KB, MB, GB, TB (e.g., "1GB", "512MB", "2.5GB")
+# Time units: s, m, h, d (e.g., "5m", "2h", "7d")
+# Plain numbers: bytes for sizes, seconds for times
 ENV SQUIDDISH_BIND_ADDR="0.0.0.0:3128" \
-    SQUIDDISH_MEMORY_SIZE="1073741824" \
-    SQUIDDISH_DISK_SIZE="107374182400" \
+    SQUIDDISH_MEMORY_SIZE="1GB" \
+    SQUIDDISH_DISK_SIZE="100GB" \
     SQUIDDISH_CACHE_DIR="/cache" \
     SQUIDDISH_COMPRESSION="true" \
-    SQUIDDISH_TTL_SECONDS="604800" \
+    SQUIDDISH_TTL="7d" \
     SQUIDDISH_APT_ENABLED="true" \
-    SQUIDDISH_APT_LIST_TTL="3600" \
-    SQUIDDISH_MAX_BODY_SIZE="10737418240" \
+    SQUIDDISH_APT_LIST_TTL="1h" \
+    SQUIDDISH_MAX_BODY_SIZE="10GB" \
     SQUIDDISH_MAX_CONNECTIONS="1000" \
-    SQUIDDISH_TIMEOUT_SECONDS="300" \
+    SQUIDDISH_TIMEOUT="5m" \
     SQUIDDISH_STRICT_HTTPS="true" \
     RUST_LOG="squiddish=info"
 

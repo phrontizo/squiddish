@@ -14,20 +14,25 @@ services:
       SQUIDDISH_BIND_ADDR: "0.0.0.0:3128"
 
       # Cache settings
-      SQUIDDISH_MEMORY_SIZE: "1073741824"        # 1GB
-      SQUIDDISH_DISK_SIZE: "107374182400"        # 100GB
+      # Size units: B, KB, MB, GB, TB (case-insensitive)
+      # Examples: "1GB", "512MB", "2.5GB", "1024" (plain numbers = bytes)
+      SQUIDDISH_MEMORY_SIZE: "1GB"
+      SQUIDDISH_DISK_SIZE: "100GB"
       SQUIDDISH_CACHE_DIR: "/cache"
       SQUIDDISH_COMPRESSION: "true"
-      SQUIDDISH_TTL_SECONDS: "604800"            # 7 days
+
+      # Time units: s, m, h, d (case-insensitive)
+      # Examples: "7d", "2h", "5m", "300" (plain numbers = seconds)
+      SQUIDDISH_TTL: "7d"
 
       # APT settings
       SQUIDDISH_APT_ENABLED: "true"
-      SQUIDDISH_APT_LIST_TTL: "3600"             # 1 hour
+      SQUIDDISH_APT_LIST_TTL: "1h"
 
       # Security settings
-      SQUIDDISH_MAX_BODY_SIZE: "10737418240"     # 10GB
+      SQUIDDISH_MAX_BODY_SIZE: "10GB"
       SQUIDDISH_MAX_CONNECTIONS: "1000"
-      SQUIDDISH_TIMEOUT_SECONDS: "300"           # 5 minutes
+      SQUIDDISH_TIMEOUT: "5m"
       SQUIDDISH_STRICT_HTTPS: "true"
 
       # Host filtering (comma-separated, leave empty to allow all)

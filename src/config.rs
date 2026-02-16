@@ -1,6 +1,70 @@
 use std::net::SocketAddr;
 use std::path::PathBuf;
 
+/// Parse size with units: B, KB, MB, GB, TB (case-insensitive)
+/// Examples: "1GB", "512MB", "1024", "2.5GB"
+fn parse_size(s: &str) -> Option<u64> {
+    let s = s.trim().to_uppercase();
+
+    // Try direct parse first (plain number)
+    if let Ok(num) = s.parse::<u64>() {
+        return Some(num);
+    }
+
+    // Parse with units
+    let (num_str, unit) = if s.ends_with("TB") {
+        (&s[..s.len()-2], 1024u64 * 1024 * 1024 * 1024)
+    } else if s.ends_with("GB") {
+        (&s[..s.len()-2], 1024u64 * 1024 * 1024)
+    } else if s.ends_with("MB") {
+        (&s[..s.len()-2], 1024u64 * 1024)
+    } else if s.ends_with("KB") {
+        (&s[..s.len()-2], 1024u64)
+    } else if s.ends_with('B') {
+        (&s[..s.len()-1], 1u64)
+    } else {
+        return None;
+    };
+
+    // Parse the numeric part (supports decimals)
+    if let Ok(num) = num_str.trim().parse::<f64>() {
+        Some((num * unit as f64) as u64)
+    } else {
+        None
+    }
+}
+
+/// Parse duration with units: s, m, h, d (case-insensitive)
+/// Examples: "5m", "2h", "7d", "300" (defaults to seconds)
+fn parse_duration(s: &str) -> Option<u64> {
+    let s = s.trim().to_lowercase();
+
+    // Try direct parse first (plain number in seconds)
+    if let Ok(num) = s.parse::<u64>() {
+        return Some(num);
+    }
+
+    // Parse with units
+    let (num_str, multiplier) = if s.ends_with('d') {
+        (&s[..s.len()-1], 86400u64) // days
+    } else if s.ends_with('h') {
+        (&s[..s.len()-1], 3600u64) // hours
+    } else if s.ends_with('m') {
+        (&s[..s.len()-1], 60u64) // minutes
+    } else if s.ends_with('s') {
+        (&s[..s.len()-1], 1u64) // seconds
+    } else {
+        return None;
+    };
+
+    // Parse the numeric part
+    if let Ok(num) = num_str.trim().parse::<u64>() {
+        Some(num * multiplier)
+    } else {
+        None
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind_addr: SocketAddr,
@@ -160,13 +224,13 @@ impl Config {
 
         // Cache config
         if let Ok(size) = std::env::var("SQUIDDISH_MEMORY_SIZE") {
-            if let Ok(parsed) = size.parse() {
-                config.cache.memory_size = parsed;
+            if let Some(parsed) = parse_size(&size) {
+                config.cache.memory_size = parsed as usize;
             }
         }
 
         if let Ok(size) = std::env::var("SQUIDDISH_DISK_SIZE") {
-            if let Ok(parsed) = size.parse() {
+            if let Some(parsed) = parse_size(&size) {
                 config.cache.disk_size = parsed;
             }
         }
@@ -179,8 +243,8 @@ impl Config {
             config.cache.compression = compression.parse().unwrap_or(true);
         }
 
-        if let Ok(ttl) = std::env::var("SQUIDDISH_TTL_SECONDS") {
-            if let Ok(parsed) = ttl.parse() {
+        if let Ok(ttl) = std::env::var("SQUIDDISH_TTL") {
+            if let Some(parsed) = parse_duration(&ttl) {
                 config.cache.ttl_seconds = parsed;
             }
         }
@@ -191,14 +255,14 @@ impl Config {
         }
 
         if let Ok(ttl) = std::env::var("SQUIDDISH_APT_LIST_TTL") {
-            if let Ok(parsed) = ttl.parse() {
+            if let Some(parsed) = parse_duration(&ttl) {
                 config.apt.list_ttl_seconds = parsed;
             }
         }
 
         // Security config
         if let Ok(size) = std::env::var("SQUIDDISH_MAX_BODY_SIZE") {
-            if let Ok(parsed) = size.parse() {
+            if let Some(parsed) = parse_size(&size) {
                 config.security.max_body_size = parsed;
             }
         }
@@ -209,8 +273,8 @@ impl Config {
             }
         }
 
-        if let Ok(timeout) = std::env::var("SQUIDDISH_TIMEOUT_SECONDS") {
-            if let Ok(parsed) = timeout.parse() {
+        if let Ok(timeout) = std::env::var("SQUIDDISH_TIMEOUT") {
+            if let Some(parsed) = parse_duration(&timeout) {
                 config.security.timeout_seconds = parsed;
             }
         }
@@ -255,13 +319,36 @@ mod tests {
     #[test]
     fn test_env_var_config() {
         std::env::set_var("SQUIDDISH_BIND_ADDR", "0.0.0.0:8080");
-        std::env::set_var("SQUIDDISH_MEMORY_SIZE", "2048");
+        std::env::set_var("SQUIDDISH_MEMORY_SIZE", "2GB");
 
         let config = Config::from_env();
         assert_eq!(config.bind_addr.port(), 8080);
-        assert_eq!(config.cache.memory_size, 2048);
+        assert_eq!(config.cache.memory_size, 2 * 1024 * 1024 * 1024);
 
         std::env::remove_var("SQUIDDISH_BIND_ADDR");
         std::env::remove_var("SQUIDDISH_MEMORY_SIZE");
+    }
+
+    #[test]
+    fn test_parse_size() {
+        assert_eq!(parse_size("1024"), Some(1024));
+        assert_eq!(parse_size("1KB"), Some(1024));
+        assert_eq!(parse_size("1MB"), Some(1024 * 1024));
+        assert_eq!(parse_size("1GB"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_size("2.5GB"), Some((2.5 * 1024.0 * 1024.0 * 1024.0) as u64));
+        assert_eq!(parse_size("1TB"), Some(1024u64 * 1024 * 1024 * 1024));
+        assert_eq!(parse_size("100mb"), Some(100 * 1024 * 1024)); // case insensitive
+        assert_eq!(parse_size("invalid"), None);
+    }
+
+    #[test]
+    fn test_parse_duration() {
+        assert_eq!(parse_duration("60"), Some(60));
+        assert_eq!(parse_duration("5s"), Some(5));
+        assert_eq!(parse_duration("5m"), Some(5 * 60));
+        assert_eq!(parse_duration("2h"), Some(2 * 3600));
+        assert_eq!(parse_duration("7d"), Some(7 * 86400));
+        assert_eq!(parse_duration("1D"), Some(86400)); // case insensitive
+        assert_eq!(parse_duration("invalid"), None);
     }
 }

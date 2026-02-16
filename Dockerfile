@@ -1,23 +1,23 @@
 # Multi-stage build for Squiddish caching proxy
 # Uses musl for static linking to create a minimal scratch-based image
 # Supports multi-arch: linux/amd64, linux/arm64
+# Uses native compilation on each platform (no cross-compilation)
 
-FROM --platform=$BUILDPLATFORM rust:1.83-alpine as builder
+FROM rust:1.83-alpine as builder
 
-# Build arguments for cross-compilation
 ARG TARGETPLATFORM
-ARG BUILDPLATFORM
 
 WORKDIR /build
 
 # Install musl build tools for static linking
 RUN apk add --no-cache musl-dev
 
-# Determine the Rust target based on platform
-RUN case "$TARGETPLATFORM" in \
-    "linux/amd64") echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
-    "linux/arm64") echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
-    *) echo "Unsupported platform: $TARGETPLATFORM" && exit 1 ;; \
+# Determine the Rust target based on current architecture (not TARGETPLATFORM)
+# This works because buildx runs native builds on each platform
+RUN case "$(uname -m)" in \
+    "x86_64") echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
+    "aarch64") echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
+    *) echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
     esac && \
     export RUST_TARGET=$(cat /tmp/rust-target) && \
     rustup target add $RUST_TARGET

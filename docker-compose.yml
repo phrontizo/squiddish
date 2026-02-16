@@ -39,8 +39,6 @@ services:
 
     restart: unless-stopped
 
-    healthcheck:
-      test: ["CMD", "sh", "-c", "netstat -an | grep 3128"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+    # Note: FROM scratch has no shell, so healthcheck disabled
+    # Use port check externally: docker ps shows port 3128 open
+    # Or monitor logs: docker logs squiddish-proxy

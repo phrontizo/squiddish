@@ -28,14 +28,6 @@ REGISTRY="ghcr.io"
 IMAGE_NAME="phrontizo/squiddish"
 FULL_IMAGE="${REGISTRY}/${IMAGE_NAME}"
 
-# Check if logged in to GitHub Container Registry
-echo -e "${YELLOW}Checking GitHub Container Registry authentication...${NC}"
-if ! docker info 2>/dev/null | grep -q "Username"; then
-    echo -e "${YELLOW}Please log in to GitHub Container Registry:${NC}"
-    echo "docker login ghcr.io -u phrontizo"
-    exit 1
-fi
-
 # Create buildx builder if it doesn't exist
 BUILDER_NAME="squiddish-builder"
 if ! docker buildx inspect ${BUILDER_NAME} &> /dev/null; then

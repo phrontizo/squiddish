@@ -3,7 +3,7 @@
 # Supports multi-arch: linux/amd64, linux/arm64
 # Uses native compilation on each platform (no cross-compilation)
 
-FROM rust:1.83-alpine as builder
+FROM rust:1.83-alpine AS builder
 
 ARG TARGETPLATFORM
 

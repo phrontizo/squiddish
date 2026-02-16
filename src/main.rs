@@ -19,11 +19,8 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Try to load from file first, then fall back to environment variables
-    let config = Config::from_file("config.toml").unwrap_or_else(|_| {
-        tracing::info!("No config.toml found, loading from environment variables");
-        Config::from_env()
-    });
+    // Load configuration from environment variables
+    let config = Config::from_env();
 
     let server = ProxyServer::new(config).await?;
     server.run().await?;

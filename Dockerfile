@@ -1,13 +1,11 @@
 # Multi-stage build for Squiddish caching proxy
-FROM rust:1.83-slim as builder
+# Uses musl for static linking to create a minimal scratch-based image
+FROM rust:1.83-alpine as builder
 
 WORKDIR /build
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    && rm -rf /var/lib/apt/lists/*
+# Install musl build tools for static linking
+RUN apk add --no-cache musl-dev
 
 # Copy manifests
 COPY Cargo.toml ./
@@ -15,40 +13,26 @@ COPY Cargo.toml ./
 # Create dummy main to build dependencies
 RUN mkdir src && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
+    cargo build --release --target x86_64-unknown-linux-musl && \
     rm -rf src
 
 # Copy source code
 COPY src ./src
 COPY tests ./tests
 
-# Build the actual binary
+# Build the actual binary with static linking
 RUN touch src/main.rs && \
-    cargo build --release
+    cargo build --release --target x86_64-unknown-linux-musl && \
+    strip target/x86_64-unknown-linux-musl/release/squiddish
 
-# Runtime stage
-FROM debian:bookworm-slim
+# Runtime stage - from scratch for minimal image
+FROM scratch
 
-# Install runtime dependencies
-RUN apt-get update && apt-get install -y \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Copy CA certificates for HTTPS
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 
-# Create non-root user
-RUN useradd -m -u 1000 -s /bin/bash squiddish
-
-# Create cache directory
-RUN mkdir -p /cache && chown squiddish:squiddish /cache
-
-WORKDIR /app
-
-# Copy binary from builder
-COPY --from=builder /build/target/release/squiddish /usr/local/bin/squiddish
-
-# Copy example config
-COPY config.toml.example /app/config.toml.example
-
-USER squiddish
+# Copy the statically linked binary
+COPY --from=builder /build/target/x86_64-unknown-linux-musl/release/squiddish /squiddish
 
 # Environment variables with defaults
 ENV SQUIDDISH_BIND_ADDR="0.0.0.0:3128" \
@@ -65,9 +49,11 @@ ENV SQUIDDISH_BIND_ADDR="0.0.0.0:3128" \
     SQUIDDISH_STRICT_HTTPS="true" \
     RUST_LOG="squiddish=info"
 
+# Run as non-root user
+USER 1000:1000
+
 EXPOSE 3128
 
 VOLUME ["/cache"]
 
-# Use shell to expand environment variables
-ENTRYPOINT ["/usr/local/bin/squiddish"]
+ENTRYPOINT ["/squiddish"]

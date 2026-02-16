@@ -27,7 +27,9 @@ services:
 
       # APT settings
       SQUIDDISH_APT_ENABLED: "true"
-      SQUIDDISH_APT_LIST_TTL: "1h"
+      SQUIDDISH_APT_LIST_TTL: "1h"        # Package lists (Packages.gz, Release, etc.)
+      SQUIDDISH_APT_PACKAGE_TTL: "30d"    # .deb package files (immutable)
+      SQUIDDISH_APT_OTHER_TTL: "1d"       # Other APT files
 
       # Security settings
       SQUIDDISH_MAX_BODY_SIZE: "10GB"

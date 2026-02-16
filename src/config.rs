@@ -101,6 +101,12 @@ pub struct AptConfig {
 
     /// Cache package lists longer (default: 1 hour)
     pub list_ttl_seconds: u64,
+
+    /// Cache .deb package files (default: 30 days)
+    pub package_ttl_seconds: u64,
+
+    /// Cache other APT files (default: 1 day)
+    pub other_ttl_seconds: u64,
 }
 
 #[derive(Debug, Clone)]
@@ -148,6 +154,14 @@ fn default_apt_list_ttl() -> u64 {
     60 * 60 // 1 hour
 }
 
+fn default_apt_package_ttl() -> u64 {
+    30 * 24 * 60 * 60 // 30 days
+}
+
+fn default_apt_other_ttl() -> u64 {
+    24 * 60 * 60 // 1 day
+}
+
 fn default_max_body_size() -> u64 {
     10 * 1024 * 1024 * 1024 // 10GB
 }
@@ -193,6 +207,8 @@ impl Default for AptConfig {
             enabled: true,
             repositories: vec![],
             list_ttl_seconds: default_apt_list_ttl(),
+            package_ttl_seconds: default_apt_package_ttl(),
+            other_ttl_seconds: default_apt_other_ttl(),
         }
     }
 }
@@ -257,6 +273,18 @@ impl Config {
         if let Ok(ttl) = std::env::var("SQUIDDISH_APT_LIST_TTL") {
             if let Some(parsed) = parse_duration(&ttl) {
                 config.apt.list_ttl_seconds = parsed;
+            }
+        }
+
+        if let Ok(ttl) = std::env::var("SQUIDDISH_APT_PACKAGE_TTL") {
+            if let Some(parsed) = parse_duration(&ttl) {
+                config.apt.package_ttl_seconds = parsed;
+            }
+        }
+
+        if let Ok(ttl) = std::env::var("SQUIDDISH_APT_OTHER_TTL") {
+            if let Some(parsed) = parse_duration(&ttl) {
+                config.apt.other_ttl_seconds = parsed;
             }
         }
 

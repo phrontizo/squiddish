@@ -282,14 +282,14 @@ impl ProxyHandler {
         let ttl_seconds = if is_apt_request(key.uri()) {
             // APT-specific TTL logic
             if crate::apt::is_apt_package_file(key.uri()) {
-                // .deb files are immutable - cache for 30 days
-                30 * 24 * 60 * 60
+                // .deb files are immutable - use configured package TTL
+                self.config.apt.package_ttl_seconds
             } else if crate::apt::is_apt_package_list(key.uri()) {
-                // Package lists change frequently - use configured APT list TTL
+                // Package lists change frequently - use configured list TTL
                 self.config.apt.list_ttl_seconds
             } else {
-                // Other APT files - moderate caching
-                24 * 60 * 60 // 1 day
+                // Other APT files - use configured other TTL
+                self.config.apt.other_ttl_seconds
             }
         } else {
             self.config.cache.ttl_seconds

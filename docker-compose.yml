@@ -10,6 +10,7 @@ services:
     volumes:
       - ./cache:/cache
     environment:
+      # Server settings
       # Bind address (0.0.0.0 to accept connections from outside container)
       SQUIDDISH_BIND_ADDR: "0.0.0.0:3128"
 
@@ -18,7 +19,7 @@ services:
       # Examples: "1GB", "512MB", "2.5GB", "1024" (plain numbers = bytes)
       SQUIDDISH_MEMORY_SIZE: "1GB"
       SQUIDDISH_DISK_SIZE: "100GB"
-      SQUIDDISH_CACHE_DIR: "/cache"
+      SQUIDDISH_CACHE_DIR: "./cache"
       SQUIDDISH_COMPRESSION: "true"
 
       # Time units: s, m, h, d (case-insensitive)
@@ -27,22 +28,22 @@ services:
 
       # APT settings
       SQUIDDISH_APT_ENABLED: "true"
-      SQUIDDISH_APT_LIST_TTL: "1h"        # Package lists (Packages.gz, Release, etc.)
       SQUIDDISH_APT_PACKAGE_TTL: "30d"    # .deb package files (immutable)
+      SQUIDDISH_APT_LIST_TTL: "1h"        # Package lists (Packages.gz, Release, etc.)
       SQUIDDISH_APT_OTHER_TTL: "1d"       # Other APT files
 
       # Security settings
       SQUIDDISH_MAX_BODY_SIZE: "10GB"
       SQUIDDISH_MAX_CONNECTIONS: "1000"
       SQUIDDISH_TIMEOUT: "5m"
-      SQUIDDISH_STRICT_HTTPS: "true"
+      SQUIDDISH_STRICT_HTTPS: "false"
 
       # Host filtering (comma-separated, leave empty to allow all)
       # SQUIDDISH_ALLOWED_HOSTS: "ubuntu.com,debian.org"
       # SQUIDDISH_BLOCKED_HOSTS: "malicious.com"
 
       # Logging
-      RUST_LOG: "squiddish=info"
+      RUST_LOG: "info"
 
     restart: unless-stopped
 

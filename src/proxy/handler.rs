@@ -212,6 +212,7 @@ impl ProxyHandler {
                 &cache_key,
                 config.security.max_body_size,
                 config.security.timeout_seconds,
+                config.clone(),
             ).await;
 
             match result {
@@ -251,6 +252,7 @@ impl ProxyHandler {
         cache_key: &CacheKey,
         max_body_size: u64,
         timeout_secs: u64,
+        config: Arc<Config>,
     ) -> Result<()> {
         // Build new request with full URI
         let uri = req.uri().clone();
@@ -315,23 +317,73 @@ impl ProxyHandler {
         }
         let body_bytes = Bytes::from(full_body);
 
-        // Cache the complete response
+        // Cache the complete response with proper TTL
         let headers_vec: Vec<(String, String)> = response_headers
             .iter()
             .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
             .collect();
+
+        // Determine TTL based on APT detection or cache headers
+        let ttl_seconds = if is_apt_request(cache_key.uri()) {
+            if crate::apt::is_apt_package_file(cache_key.uri()) {
+                config.apt.package_ttl_seconds
+            } else if crate::apt::is_apt_package_list(cache_key.uri()) {
+                config.apt.list_ttl_seconds
+            } else {
+                config.apt.other_ttl_seconds
+            }
+        } else {
+            // For non-APT, parse cache control headers
+            Self::parse_cache_control_headers(&response_headers)
+                .unwrap_or(config.cache.ttl_seconds)
+        };
 
         let entry = CacheEntry {
             data: body_bytes,
             headers: headers_vec,
             status: status.as_u16(),
             timestamp: SystemTime::now(),
-            ttl_seconds: 3600, // Will be updated based on headers/APT logic
+            ttl_seconds,
         };
 
         let _ = cache.put(cache_key.clone(), entry).await;
 
         Ok(())
+    }
+
+    fn parse_cache_control_headers(headers: &hyper::HeaderMap) -> Option<u64> {
+        // Check Cache-Control header
+        if let Some(cache_control) = headers.get("cache-control") {
+            if let Ok(value) = cache_control.to_str() {
+                for directive in value.split(',') {
+                    let directive = directive.trim();
+                    if directive.starts_with("max-age=") {
+                        if let Ok(seconds) = directive[8..].parse::<u64>() {
+                            return Some(seconds);
+                        }
+                    }
+                    if directive.starts_with("s-maxage=") {
+                        if let Ok(seconds) = directive[9..].parse::<u64>() {
+                            return Some(seconds);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Check Expires header
+        if let Some(expires) = headers.get("expires") {
+            if let Ok(expires_str) = expires.to_str() {
+                if let Ok(expires_time) = httpdate::parse_http_date(expires_str) {
+                    let now = SystemTime::now();
+                    if let Ok(duration) = expires_time.duration_since(now) {
+                        return Some(duration.as_secs());
+                    }
+                }
+            }
+        }
+
+        None
     }
 
     async fn forward_request_full(
@@ -390,68 +442,23 @@ impl ProxyHandler {
         let uri = req.uri().to_string();
         let method = req.method().as_str();
 
-        // Include Vary headers in cache key
-        let vary_headers: Vec<(String, String)> = vec![];
-
-        CacheKey::new(method, &uri, &vary_headers)
-    }
-
-    #[allow(dead_code)]
-    async fn cache_response(
-        &self,
-        key: &CacheKey,
-        response: &Response<Full<Bytes>>,
-    ) -> Result<()> {
-        let headers: Vec<(String, String)> = response
-            .headers()
+        // For proper Vary support, we'd need to check if there's already a cached
+        // response with Vary headers. For now, we include common vary headers
+        // that are typically used (Accept-Encoding, Accept, User-Agent)
+        let vary_headers: Vec<(String, String)> = req.headers()
             .iter()
-            .map(|(k, v)| {
-                (
-                    k.as_str().to_string(),
-                    v.to_str().unwrap_or("").to_string(),
-                )
+            .filter_map(|(name, value)| {
+                let name_str = name.as_str().to_lowercase();
+                // Include common headers that servers typically vary on
+                if name_str == "accept-encoding" || name_str == "accept" || name_str == "user-agent" {
+                    Some((name.as_str().to_string(), value.to_str().unwrap_or("").to_string()))
+                } else {
+                    None
+                }
             })
             .collect();
 
-        // Get body as Bytes - Full<Bytes> wraps a single Bytes value
-        // We collect all frames using BodyExt::collect
-        let collected = response.body().clone().collect().await.map_err(|e| {
-            ProxyError::Cache(format!("Failed to collect body: {}", e))
-        })?;
-        let data = collected.to_bytes();
-
-        // Determine TTL based on cache headers or request type
-        let ttl_seconds = if is_apt_request(key.uri()) {
-            // APT-specific TTL logic
-            if crate::apt::is_apt_package_file(key.uri()) {
-                // .deb files are immutable - use configured package TTL
-                self.config.apt.package_ttl_seconds
-            } else if crate::apt::is_apt_package_list(key.uri()) {
-                // Package lists change frequently - use configured list TTL
-                self.config.apt.list_ttl_seconds
-            } else {
-                // Other APT files - use configured other TTL
-                self.config.apt.other_ttl_seconds
-            }
-        } else {
-            // For non-APT requests, honor cache headers from the origin
-            parse_cache_headers(response.headers())
-                .unwrap_or(self.config.cache.ttl_seconds)
-        };
-
-        let entry = CacheEntry {
-            data,
-            headers,
-            status: response.status().as_u16(),
-            timestamp: SystemTime::now(),
-            ttl_seconds,
-        };
-
-        self.cache.put(key.clone(), entry).await?;
-
-        tracing::debug!("Cached response for {}", key.uri());
-
-        Ok(())
+        CacheKey::new(method, &uri, &vary_headers)
     }
 
     fn build_error_page(&self, error: &ProxyError) -> Response<Either<Full<Bytes>, StreamingBody>> {
@@ -536,50 +543,6 @@ impl ProxyHandler {
     }
 }
 
-#[allow(dead_code)]
-/// Parse Cache-Control and other cache headers to determine TTL
-fn parse_cache_headers(headers: &hyper::HeaderMap) -> Option<u64> {
-    // Check Cache-Control header
-    if let Some(cache_control) = headers.get("cache-control") {
-        if let Ok(value) = cache_control.to_str() {
-            // Parse max-age directive
-            for directive in value.split(',') {
-                let directive = directive.trim();
-                if directive.starts_with("max-age=") {
-                    if let Ok(seconds) = directive[8..].parse::<u64>() {
-                        tracing::debug!("Using max-age={} from Cache-Control", seconds);
-                        return Some(seconds);
-                    }
-                }
-                // Also check s-maxage (shared cache directive)
-                if directive.starts_with("s-maxage=") {
-                    if let Ok(seconds) = directive[9..].parse::<u64>() {
-                        tracing::debug!("Using s-maxage={} from Cache-Control", seconds);
-                        return Some(seconds);
-                    }
-                }
-            }
-        }
-    }
-
-    // Check Expires header as fallback
-    if let Some(expires) = headers.get("expires") {
-        if let Ok(expires_str) = expires.to_str() {
-            // Try to parse HTTP date format
-            if let Ok(expires_time) = httpdate::parse_http_date(expires_str) {
-                let now = SystemTime::now();
-                if let Ok(duration) = expires_time.duration_since(now) {
-                    let seconds = duration.as_secs();
-                    tracing::debug!("Using Expires header: {} seconds", seconds);
-                    return Some(seconds);
-                }
-            }
-        }
-    }
-
-    None
-}
-
 fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
     let authority = uri
         .authority()
@@ -600,26 +563,6 @@ fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
     }
 }
 
-#[allow(dead_code)]
-fn should_cache(response: &Response<Full<Bytes>>) -> bool {
-    let status = response.status();
-
-    // Only cache successful responses
-    if !status.is_success() {
-        return false;
-    }
-
-    // Check Cache-Control headers
-    if let Some(cache_control) = response.headers().get("cache-control") {
-        if let Ok(value) = cache_control.to_str() {
-            if value.contains("no-store") || value.contains("private") {
-                return false;
-            }
-        }
-    }
-
-    true
-}
 
 fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, StreamingBody>> {
     let mut builder = Response::builder().status(entry.status);
@@ -660,31 +603,4 @@ mod tests {
         assert_eq!(port, 443);
     }
 
-    #[test]
-    fn test_should_cache_success() {
-        let response = Response::builder()
-            .status(200)
-            .body(Full::new(Bytes::new()))
-            .unwrap();
-        assert!(should_cache(&response));
-    }
-
-    #[test]
-    fn test_should_cache_no_store() {
-        let response = Response::builder()
-            .status(200)
-            .header("cache-control", "no-store")
-            .body(Full::new(Bytes::new()))
-            .unwrap();
-        assert!(!should_cache(&response));
-    }
-
-    #[test]
-    fn test_should_cache_error() {
-        let response = Response::builder()
-            .status(404)
-            .body(Full::new(Bytes::new()))
-            .unwrap();
-        assert!(!should_cache(&response));
-    }
 }

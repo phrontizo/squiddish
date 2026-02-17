@@ -51,6 +51,27 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
                             },
+                            "/vary" => {
+                                // Test Vary header support - response varies by Accept-Encoding
+                                let accept_encoding = req.headers()
+                                    .get("accept-encoding")
+                                    .and_then(|v| v.to_str().ok())
+                                    .unwrap_or("identity");
+
+                                let body = if accept_encoding.contains("gzip") {
+                                    "gzip content"
+                                } else {
+                                    "plain content"
+                                };
+
+                                let response = Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("vary", "Accept-Encoding")
+                                    .header("content-encoding", if accept_encoding.contains("gzip") { "gzip" } else { "identity" })
+                                    .body(Full::new(Bytes::from(body)))
+                                    .unwrap();
+                                return Ok::<_, Infallible>(response);
+                            },
                             _ => "Not found".to_string(),
                         };
 
@@ -307,4 +328,54 @@ async fn test_apt_request_detection() {
     assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/stable/main/binary-amd64/Packages.gz"));
     assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/stable/InRelease"));
     assert!(!is_apt_package_list("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
+}
+
+#[tokio::test]
+async fn test_vary_header_support() {
+    // Start test HTTP server
+    let (origin_addr, _origin_handle) = start_test_server().await;
+
+    // Start proxy server
+    let (proxy_addr, _proxy_handle) = start_proxy_server().await;
+
+    // Create client configured to use proxy
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", proxy_addr)).unwrap())
+        .build()
+        .unwrap();
+
+    // First request with gzip Accept-Encoding
+    let response1 = client
+        .get(format!("http://{}/vary", origin_addr))
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response1.status(), StatusCode::OK);
+    let body1 = response1.text().await.unwrap();
+    assert_eq!(body1, "gzip content");
+
+    // Second request with no Accept-Encoding (should get different cached response)
+    let response2 = client
+        .get(format!("http://{}/vary", origin_addr))
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response2.status(), StatusCode::OK);
+    let body2 = response2.text().await.unwrap();
+    assert_eq!(body2, "plain content");
+
+    // Third request with gzip again - should hit cache and get gzip content
+    let response3 = client
+        .get(format!("http://{}/vary", origin_addr))
+        .header("Accept-Encoding", "gzip")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response3.status(), StatusCode::OK);
+    let body3 = response3.text().await.unwrap();
+    assert_eq!(body3, "gzip content");
 }

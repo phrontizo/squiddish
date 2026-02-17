@@ -23,6 +23,7 @@ pub fn is_apt_request(uri: &str) -> bool {
 
 /// Determine if an APT request is a package list (should be cached shorter)
 /// Package lists change frequently as repositories are updated
+#[allow(dead_code)]
 pub fn is_apt_package_list(uri: &str) -> bool {
     let list_patterns = ["Packages.gz", "Packages.xz", "Release", "InRelease"];
     list_patterns.iter().any(|pattern| uri.contains(pattern))
@@ -30,6 +31,7 @@ pub fn is_apt_package_list(uri: &str) -> bool {
 
 /// Determine if an APT request is a package file (can be cached longer)
 /// .deb files are immutable and can be cached for extended periods
+#[allow(dead_code)]
 pub fn is_apt_package_file(uri: &str) -> bool {
     uri.ends_with(".deb")
 }

@@ -40,6 +40,7 @@ impl CacheKey {
         hex::encode(self.hash)
     }
 
+    #[allow(dead_code)]
     pub fn uri(&self) -> &str {
         &self.uri
     }

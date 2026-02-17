@@ -189,7 +189,7 @@ impl ProxyHandler {
         &self,
         req: Request<Incoming>,
         cache_key: CacheKey,
-        is_apt: bool,
+        _is_apt: bool,
     ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         // Start the download and get broadcast sender
         let sender = self.cache.inflight().start_download(&cache_key);
@@ -396,6 +396,7 @@ impl ProxyHandler {
         CacheKey::new(method, &uri, &vary_headers)
     }
 
+    #[allow(dead_code)]
     async fn cache_response(
         &self,
         key: &CacheKey,
@@ -535,6 +536,7 @@ impl ProxyHandler {
     }
 }
 
+#[allow(dead_code)]
 /// Parse Cache-Control and other cache headers to determine TTL
 fn parse_cache_headers(headers: &hyper::HeaderMap) -> Option<u64> {
     // Check Cache-Control header
@@ -598,6 +600,7 @@ fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
     }
 }
 
+#[allow(dead_code)]
 fn should_cache(response: &Response<Full<Bytes>>) -> bool {
     let status = response.status();
 

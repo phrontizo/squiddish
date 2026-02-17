@@ -19,7 +19,7 @@ services:
       # Examples: "1GB", "512MB", "2.5GB", "1024" (plain numbers = bytes)
       SQUIDDISH_MEMORY_SIZE: "1GB"
       SQUIDDISH_DISK_SIZE: "100GB"
-      SQUIDDISH_CACHE_DIR: "./cache"
+      SQUIDDISH_CACHE_DIR: "/cache"
       SQUIDDISH_COMPRESSION: "true"
 
       # Time units: s, m, h, d (case-insensitive)
@@ -36,7 +36,7 @@ services:
       SQUIDDISH_MAX_BODY_SIZE: "10GB"
       SQUIDDISH_MAX_CONNECTIONS: "1000"
       SQUIDDISH_TIMEOUT: "5m"
-      SQUIDDISH_STRICT_HTTPS: "false"
+      SQUIDDISH_STRICT_HTTPS: "true"
 
       # Host filtering (comma-separated, leave empty to allow all)
       # SQUIDDISH_ALLOWED_HOSTS: "ubuntu.com,debian.org"

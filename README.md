@@ -82,7 +82,7 @@ APT requests are automatically detected and given optimized TTL values:
 | `SQUIDDISH_MAX_BODY_SIZE`   | `10GB`    | Maximum response body size                                |
 | `SQUIDDISH_MAX_CONNECTIONS` | `1000`    | Maximum concurrent connections                            |
 | `SQUIDDISH_TIMEOUT`         | `5m`      | Request timeout                                           |
-| `SQUIDDISH_STRICT_HTTPS`    | `false`   | Only allow CONNECT on port 443                            |
+| `SQUIDDISH_STRICT_HTTPS`    | `true`    | Only allow CONNECT on port 443                            |
 | `SQUIDDISH_ALLOWED_HOSTS`   | _(empty)_ | Comma-separated allowed host patterns (empty = allow all) |
 | `SQUIDDISH_BLOCKED_HOSTS`   | _(empty)_ | Comma-separated blocked host patterns                     |
 

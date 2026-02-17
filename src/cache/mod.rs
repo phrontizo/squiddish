@@ -6,7 +6,7 @@ mod inflight;
 pub use memory::MemoryCache;
 pub use disk::DiskCache;
 pub use key::CacheKey;
-pub use inflight::InflightDownloads;
+pub use inflight::{InflightDownloads, DownloadChunk};
 
 use crate::error::Result;
 use bytes::Bytes;
@@ -53,6 +53,7 @@ pub trait Cache: Send + Sync {
 pub struct TieredCache {
     memory: MemoryCache,
     disk: DiskCache,
+    inflight: InflightDownloads,
 }
 
 impl TieredCache {
@@ -63,8 +64,13 @@ impl TieredCache {
     ) -> Result<Self> {
         let memory = MemoryCache::new(memory_size);
         let disk = DiskCache::new(disk_cache_dir, disk_size).await?;
+        let inflight = InflightDownloads::new();
 
-        Ok(Self { memory, disk })
+        Ok(Self { memory, disk, inflight })
+    }
+
+    pub fn inflight(&self) -> &InflightDownloads {
+        &self.inflight
     }
 
     pub async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {

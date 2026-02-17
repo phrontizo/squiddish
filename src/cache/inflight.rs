@@ -6,9 +6,22 @@ use tokio::sync::broadcast;
 
 use super::CacheKey;
 
+/// Represents a chunk of data in the download stream
+#[derive(Debug, Clone)]
+pub enum DownloadChunk {
+    Data(Bytes),
+    Complete,
+    Error(String),
+}
+
 /// Manages in-flight downloads to handle concurrent requests for the same resource
 pub struct InflightDownloads {
-    downloads: Arc<RwLock<HashMap<String, broadcast::Sender<Result<Bytes, String>>>>>,
+    downloads: Arc<RwLock<HashMap<String, DownloadState>>>,
+}
+
+struct DownloadState {
+    sender: broadcast::Sender<DownloadChunk>,
+    accumulated: Arc<RwLock<Vec<Bytes>>>,
 }
 
 impl InflightDownloads {
@@ -18,31 +31,47 @@ impl InflightDownloads {
         }
     }
 
-    /// Try to register a new download. Returns None if download is already in progress,
-    /// or Some(receiver) if this is a new download that should be started.
-    pub fn start_download(&self, key: &CacheKey) -> Option<broadcast::Receiver<Result<Bytes, String>>> {
+    /// Check if a download is in progress and subscribe to it
+    pub fn join_download(&self, key: &CacheKey) -> Option<(broadcast::Receiver<DownloadChunk>, Vec<Bytes>)> {
         let key_str = key.hash_hex();
-        let mut downloads = self.downloads.write();
+        let downloads = self.downloads.read();
 
-        if let Some(sender) = downloads.get(&key_str) {
-            // Download already in progress, subscribe to it
-            Some(sender.subscribe())
+        if let Some(state) = downloads.get(&key_str) {
+            // Download already in progress
+            let receiver = state.sender.subscribe();
+            let accumulated = state.accumulated.read().clone();
+            tracing::debug!("Joining existing download for {}, already have {} chunks", key_str, accumulated.len());
+            Some((receiver, accumulated))
         } else {
-            // No download in progress, return None to signal caller should start one
             None
         }
     }
 
-    /// Register that we're starting a download and get a sender to broadcast chunks
-    pub fn register_download(&self, key: &CacheKey) -> broadcast::Sender<Result<Bytes, String>> {
+    /// Register a new download and get a sender to broadcast chunks
+    pub fn start_download(&self, key: &CacheKey) -> broadcast::Sender<DownloadChunk> {
         let key_str = key.hash_hex();
         let mut downloads = self.downloads.write();
 
-        // Create a broadcast channel with reasonable buffer (100 chunks)
-        let (sender, _) = broadcast::channel(100);
-        downloads.insert(key_str.clone(), sender.clone());
+        // Create a broadcast channel with reasonable buffer (1000 chunks for large files)
+        let (sender, _) = broadcast::channel(1000);
+        let state = DownloadState {
+            sender: sender.clone(),
+            accumulated: Arc::new(RwLock::new(Vec::new())),
+        };
+        downloads.insert(key_str.clone(), state);
 
+        tracing::debug!("Started new download for {}", key_str);
         sender
+    }
+
+    /// Add a chunk to the accumulated data (for late joiners)
+    pub fn add_chunk(&self, key: &CacheKey, chunk: Bytes) {
+        let key_str = key.hash_hex();
+        let downloads = self.downloads.read();
+
+        if let Some(state) = downloads.get(&key_str) {
+            state.accumulated.write().push(chunk);
+        }
     }
 
     /// Mark a download as complete and remove it from tracking
@@ -50,5 +79,6 @@ impl InflightDownloads {
         let key_str = key.hash_hex();
         let mut downloads = self.downloads.write();
         downloads.remove(&key_str);
+        tracing::debug!("Completed download for {}", key_str);
     }
 }

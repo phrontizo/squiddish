@@ -32,6 +32,9 @@ pub enum ProxyError {
 
     #[error("DNS lookup failed: {0}")]
     DnsError(String),
+
+    #[error("Network error: {0}")]
+    Network(String),
 }
 
 pub type Result<T> = std::result::Result<T, ProxyError>;

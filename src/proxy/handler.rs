@@ -193,6 +193,8 @@ impl ProxyHandler {
     ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         // Start the download and get broadcast sender
         let sender = self.cache.inflight().start_download(&cache_key);
+
+        // Subscribe BEFORE spawning so we don't miss any chunks
         let receiver = sender.subscribe();
 
         // Clone necessary data for the background task
@@ -200,6 +202,9 @@ impl ProxyHandler {
         let config = self.config.clone();
         let client = self.client.clone();
         let uri = req.uri().clone();
+
+        // Create a oneshot channel to get the response status/headers
+        let (status_tx, status_rx) = tokio::sync::oneshot::channel();
 
         // Spawn background task to fetch and broadcast
         tokio::spawn(async move {
@@ -213,6 +218,7 @@ impl ProxyHandler {
                 config.security.max_body_size,
                 config.security.timeout_seconds,
                 config.clone(),
+                Some(status_tx),
             ).await;
 
             match result {
@@ -230,10 +236,27 @@ impl ProxyHandler {
             cache.inflight().complete_download(&cache_key);
         });
 
-        // Return streaming response immediately
-        Ok(Response::builder()
-            .status(StatusCode::OK)
-            .body(Either::Right(StreamingBody::new(receiver, vec![])))?)
+        // Wait for the response headers or error
+        match status_rx.await {
+            Ok(Ok((status, headers))) => {
+                // Success - return streaming response
+                let mut builder = Response::builder().status(status);
+
+                for (name, value) in headers {
+                    builder = builder.header(name, value);
+                }
+
+                Ok(builder.body(Either::Right(StreamingBody::new(receiver, vec![])))?)
+            }
+            Ok(Err(e)) => {
+                // Error occurred before we could start streaming
+                Err(e)
+            }
+            Err(_) => {
+                // Sender dropped without sending
+                Err(ProxyError::Network("Request failed".to_string()))
+            }
+        }
     }
 
     async fn handle_passthrough_request(
@@ -253,6 +276,7 @@ impl ProxyHandler {
         max_body_size: u64,
         timeout_secs: u64,
         config: Arc<Config>,
+        status_tx: Option<tokio::sync::oneshot::Sender<Result<(hyper::StatusCode, Vec<(String, String)>)>>>,
     ) -> Result<()> {
         // Build new request with full URI
         let uri = req.uri().clone();
@@ -279,10 +303,29 @@ impl ProxyHandler {
         );
 
         // Forward request
-        let response = fetch_with_timeout(&client, new_req, timeout_secs).await?;
+        let response = match fetch_with_timeout(&client, new_req, timeout_secs).await {
+            Ok(r) => r,
+            Err(e) => {
+                // Send error back through oneshot channel if provided
+                if let Some(tx) = status_tx {
+                    // Convert error to string for cloning
+                    let _ = tx.send(Err(ProxyError::Network(e.to_string())));
+                }
+                return Err(e);
+            }
+        };
 
         let status = response.status();
         let response_headers = response.headers().clone();
+
+        // Send status and headers back through oneshot channel
+        if let Some(tx) = status_tx {
+            let headers_vec: Vec<(String, String)> = response_headers
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+                .collect();
+            let _ = tx.send(Ok((status, headers_vec)));
+        }
 
         // Stream the response body
         let mut body = response.into_body();

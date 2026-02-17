@@ -131,9 +131,18 @@ impl ProxyHandler {
             )));
         }
 
+        // Test DNS resolution and connection BEFORE sending 200 OK
+        // This prevents returning success for non-existent domains
+        let target_addr = format!("{}:{}", host, port);
+        let _test_connection = tokio::net::TcpStream::connect(&target_addr).await.map_err(|e| {
+            ProxyError::Tunnel(format!("Failed to connect to {}: {}", target_addr, e))
+        })?;
+        // Connection succeeds, close it immediately as we'll reconnect after upgrade
+        drop(_test_connection);
+
         let peer_addr = self.peer_addr;
 
-        // Send 200 Connection Established
+        // Now send 200 Connection Established (we know the target is reachable)
         tokio::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {

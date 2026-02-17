@@ -168,13 +168,20 @@ async fn test_cache_hit_miss_behavior() {
 
     assert_eq!(response2.status(), StatusCode::OK);
 
-    // Check for cache hit header before consuming body
+    // Check for cache hit header and TTL before consuming body
     let has_cache_hit = response2.headers().get("x-cache").map(|v| v.to_str().unwrap()) == Some("HIT");
+    let cache_ttl = response2.headers().get("x-cache-ttl").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
     let body2 = response2.text().await.unwrap();
 
     // Both responses should have same content
     assert_eq!(body1, body2);
     assert!(has_cache_hit, "Expected cache HIT header");
+
+    // Verify X-Cache-TTL header is present and is a valid number
+    assert!(cache_ttl.is_some(), "Expected X-Cache-TTL header on cache hit");
+    let ttl_value = cache_ttl.unwrap().parse::<u64>().expect("X-Cache-TTL should be a valid number");
+    assert!(ttl_value > 0, "X-Cache-TTL should be greater than 0");
+    assert!(ttl_value <= 7 * 24 * 60 * 60, "X-Cache-TTL should not exceed default TTL of 7 days");
 }
 
 #[tokio::test]

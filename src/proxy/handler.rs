@@ -1,11 +1,12 @@
 use crate::apt::is_apt_request;
-use crate::cache::{CacheEntry, CacheKey, TieredCache};
+use crate::cache::{CacheEntry, CacheKey, DownloadChunk, TieredCache};
 use crate::config::Config;
 use crate::error::{ProxyError, Result};
 use crate::proxy::client::{collect_body, create_client, fetch_with_timeout, HttpClient};
+use crate::proxy::streaming::StreamingBody;
 use crate::proxy::tunnel::handle_connect_tunnel;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::{BodyExt, Either, Full};
 use hyper::body::Incoming;
 use hyper::{Method, Request, Response, StatusCode, Uri};
 use std::net::SocketAddr;
@@ -33,7 +34,7 @@ impl ProxyHandler {
     pub async fn handle(
         &self,
         req: Request<Incoming>,
-    ) -> std::result::Result<Response<Full<Bytes>>, hyper::Error> {
+    ) -> std::result::Result<Response<Either<Full<Bytes>, StreamingBody>>, hyper::Error> {
         let result = self.handle_request(req).await;
 
         match result {
@@ -48,7 +49,7 @@ impl ProxyHandler {
     async fn handle_request(
         &self,
         req: Request<Incoming>,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         // Security validations
         self.validate_request(&req)?;
 
@@ -115,7 +116,7 @@ impl ProxyHandler {
     async fn handle_connect(
         &self,
         req: Request<Incoming>,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         tracing::info!("CONNECT request to {}", req.uri());
 
         // Parse target host and port
@@ -150,13 +151,13 @@ impl ProxyHandler {
 
         Ok(Response::builder()
             .status(StatusCode::OK)
-            .body(Full::new(Bytes::new()))?)
+            .body(Either::Left(Full::new(Bytes::new())))?)
     }
 
     async fn handle_cacheable_request(
         &self,
         req: Request<Incoming>,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         // Create cache key
         let cache_key = self.create_cache_key(&req);
 
@@ -171,31 +172,172 @@ impl ProxyHandler {
 
         tracing::info!("{} Cache MISS: {}", cache_type, req.uri());
 
-        // Forward request
-        let response = self.forward_request(req).await?;
-
-        // Cache if cacheable
-        if should_cache(&response) {
-            if let Err(e) = self.cache_response(&cache_key, &response).await {
-                tracing::warn!("Failed to cache response: {}", e);
-            }
+        // Check if download is already in progress
+        if let Some((receiver, initial_chunks)) = self.cache.inflight().join_download(&cache_key) {
+            tracing::info!("{} Joining in-flight download: {}", cache_type, req.uri());
+            // Return streaming response for concurrent request
+            return Ok(Response::builder()
+                .status(StatusCode::OK)
+                .body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?);
         }
 
-        Ok(response)
+        // Start a new download with streaming
+        self.handle_streaming_download(req, cache_key, is_apt).await
+    }
+
+    async fn handle_streaming_download(
+        &self,
+        req: Request<Incoming>,
+        cache_key: CacheKey,
+        is_apt: bool,
+    ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
+        // Start the download and get broadcast sender
+        let sender = self.cache.inflight().start_download(&cache_key);
+        let receiver = sender.subscribe();
+
+        // Clone necessary data for the background task
+        let cache = self.cache.clone();
+        let config = self.config.clone();
+        let client = self.client.clone();
+        let uri = req.uri().clone();
+
+        // Spawn background task to fetch and broadcast
+        tokio::spawn(async move {
+            // Forward the request
+            let result = Self::fetch_and_stream(
+                client,
+                req,
+                &sender,
+                &cache,
+                &cache_key,
+                config.security.max_body_size,
+                config.security.timeout_seconds,
+            ).await;
+
+            match result {
+                Ok(_) => {
+                    tracing::debug!("Download completed successfully: {}", uri);
+                    let _ = sender.send(DownloadChunk::Complete);
+                }
+                Err(e) => {
+                    tracing::error!("Download failed: {} - {}", uri, e);
+                    let _ = sender.send(DownloadChunk::Error(e.to_string()));
+                }
+            }
+
+            // Mark download as complete
+            cache.inflight().complete_download(&cache_key);
+        });
+
+        // Return streaming response immediately
+        Ok(Response::builder()
+            .status(StatusCode::OK)
+            .body(Either::Right(StreamingBody::new(receiver, vec![])))?)
     }
 
     async fn handle_passthrough_request(
         &self,
         req: Request<Incoming>,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         tracing::info!("Passthrough request: {} {}", req.method(), req.uri());
-        self.forward_request(req).await
+        self.forward_request_full(req).await
     }
 
-    async fn forward_request(
+    async fn fetch_and_stream(
+        client: HttpClient,
+        req: Request<Incoming>,
+        sender: &tokio::sync::broadcast::Sender<DownloadChunk>,
+        cache: &Arc<TieredCache>,
+        cache_key: &CacheKey,
+        max_body_size: u64,
+        timeout_secs: u64,
+    ) -> Result<()> {
+        // Build new request with full URI
+        let uri = req.uri().clone();
+        let method = req.method().clone();
+        let headers = req.headers().clone();
+
+        // Collect request body
+        let body_bytes = collect_body(req.into_body(), max_body_size).await?;
+
+        // Create new request with absolute URI
+        let mut new_req = Request::builder()
+            .method(method)
+            .uri(uri)
+            .body(Full::new(body_bytes))
+            .map_err(ProxyError::from)?;
+
+        // Copy headers (excluding hop-by-hop headers)
+        *new_req.headers_mut() = filter_headers(headers);
+
+        // Add Via header
+        new_req.headers_mut().insert(
+            "via",
+            "1.1 squiddish".to_string().parse().unwrap(),
+        );
+
+        // Forward request
+        let response = fetch_with_timeout(&client, new_req, timeout_secs).await?;
+
+        let status = response.status();
+        let response_headers = response.headers().clone();
+
+        // Stream the response body
+        let mut body = response.into_body();
+        let mut accumulated_data = Vec::new();
+        let mut total_size = 0u64;
+
+        while let Some(frame) = body.frame().await {
+            let frame = frame?;
+            if let Some(chunk) = frame.data_ref() {
+                if total_size + chunk.len() as u64 > max_body_size {
+                    return Err(ProxyError::ValidationFailed("Response body too large".to_string()));
+                }
+
+                let bytes = chunk.clone();
+                total_size += bytes.len() as u64;
+
+                // Add to accumulated data for caching
+                accumulated_data.push(bytes.clone());
+
+                // Add to inflight tracking for late joiners
+                cache.inflight().add_chunk(cache_key, bytes.clone());
+
+                // Broadcast to all listeners
+                let _ = sender.send(DownloadChunk::Data(bytes));
+            }
+        }
+
+        // Combine all chunks for caching
+        let mut full_body = Vec::new();
+        for chunk in accumulated_data {
+            full_body.extend_from_slice(&chunk);
+        }
+        let body_bytes = Bytes::from(full_body);
+
+        // Cache the complete response
+        let headers_vec: Vec<(String, String)> = response_headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
+
+        let entry = CacheEntry {
+            data: body_bytes,
+            headers: headers_vec,
+            status: status.as_u16(),
+            timestamp: SystemTime::now(),
+            ttl_seconds: 3600, // Will be updated based on headers/APT logic
+        };
+
+        let _ = cache.put(cache_key.clone(), entry).await;
+
+        Ok(())
+    }
+
+    async fn forward_request_full(
         &self,
         req: Request<Incoming>,
-    ) -> Result<Response<Full<Bytes>>> {
+    ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
         // Build new request with full URI
         let uri = req.uri().clone();
         let method = req.method().clone();
@@ -236,7 +378,7 @@ impl ProxyHandler {
         // Build response
         let mut resp = Response::builder()
             .status(status)
-            .body(Full::new(body_bytes))
+            .body(Either::Left(Full::new(body_bytes)))
             .map_err(ProxyError::from)?;
 
         *resp.headers_mut() = filter_headers(headers);
@@ -311,7 +453,7 @@ impl ProxyHandler {
         Ok(())
     }
 
-    fn build_error_page(&self, error: &ProxyError) -> Response<Full<Bytes>> {
+    fn build_error_page(&self, error: &ProxyError) -> Response<Either<Full<Bytes>, StreamingBody>> {
         let error_html = format!(
             r#"<!DOCTYPE html>
 <html>
@@ -388,7 +530,7 @@ impl ProxyHandler {
         Response::builder()
             .status(StatusCode::BAD_GATEWAY)
             .header("content-type", "text/html; charset=utf-8")
-            .body(Full::new(Bytes::from(error_html)))
+            .body(Either::Left(Full::new(Bytes::from(error_html))))
             .unwrap()
     }
 }
@@ -476,7 +618,7 @@ fn should_cache(response: &Response<Full<Bytes>>) -> bool {
     true
 }
 
-fn build_response_from_cache(entry: CacheEntry) -> Response<Full<Bytes>> {
+fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, StreamingBody>> {
     let mut builder = Response::builder().status(entry.status);
 
     for (name, value) in entry.headers {
@@ -486,7 +628,7 @@ fn build_response_from_cache(entry: CacheEntry) -> Response<Full<Bytes>> {
     // Add cache hit header
     builder = builder.header("x-cache", "HIT");
 
-    builder.body(Full::new(entry.data)).unwrap()
+    builder.body(Either::Left(Full::new(entry.data))).unwrap()
 }
 
 fn filter_headers(mut headers: hyper::HeaderMap) -> hyper::HeaderMap {

@@ -574,6 +574,12 @@ fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, 
     // Add cache hit header
     builder = builder.header("x-cache", "HIT");
 
+    // Calculate remaining TTL
+    if let Ok(elapsed) = entry.timestamp.elapsed() {
+        let remaining_ttl = entry.ttl_seconds.saturating_sub(elapsed.as_secs());
+        builder = builder.header("x-cache-ttl", remaining_ttl.to_string());
+    }
+
     builder.body(Either::Left(Full::new(entry.data))).unwrap()
 }
 

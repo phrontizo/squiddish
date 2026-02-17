@@ -29,6 +29,9 @@ pub enum ProxyError {
 
     #[error("Request validation failed: {0}")]
     ValidationFailed(String),
+
+    #[error("DNS lookup failed: {0}")]
+    DnsError(String),
 }
 
 pub type Result<T> = std::result::Result<T, ProxyError>;

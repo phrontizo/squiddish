@@ -1,10 +1,12 @@
 mod memory;
 mod disk;
 mod key;
+mod inflight;
 
 pub use memory::MemoryCache;
 pub use disk::DiskCache;
 pub use key::CacheKey;
+pub use inflight::InflightDownloads;
 
 use crate::error::Result;
 use bytes::Bytes;

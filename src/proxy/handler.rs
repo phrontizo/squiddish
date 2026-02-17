@@ -277,7 +277,7 @@ impl ProxyHandler {
         })?;
         let data = collected.to_bytes();
 
-        // Determine TTL based on request type with APT-specific optimizations
+        // Determine TTL based on cache headers or request type
         let ttl_seconds = if is_apt_request(key.uri()) {
             // APT-specific TTL logic
             if crate::apt::is_apt_package_file(key.uri()) {
@@ -291,7 +291,9 @@ impl ProxyHandler {
                 self.config.apt.other_ttl_seconds
             }
         } else {
-            self.config.cache.ttl_seconds
+            // For non-APT requests, honor cache headers from the origin
+            parse_cache_headers(response.headers())
+                .unwrap_or(self.config.cache.ttl_seconds)
         };
 
         let entry = CacheEntry {
@@ -389,6 +391,49 @@ impl ProxyHandler {
             .body(Full::new(Bytes::from(error_html)))
             .unwrap()
     }
+}
+
+/// Parse Cache-Control and other cache headers to determine TTL
+fn parse_cache_headers(headers: &hyper::HeaderMap) -> Option<u64> {
+    // Check Cache-Control header
+    if let Some(cache_control) = headers.get("cache-control") {
+        if let Ok(value) = cache_control.to_str() {
+            // Parse max-age directive
+            for directive in value.split(',') {
+                let directive = directive.trim();
+                if directive.starts_with("max-age=") {
+                    if let Ok(seconds) = directive[8..].parse::<u64>() {
+                        tracing::debug!("Using max-age={} from Cache-Control", seconds);
+                        return Some(seconds);
+                    }
+                }
+                // Also check s-maxage (shared cache directive)
+                if directive.starts_with("s-maxage=") {
+                    if let Ok(seconds) = directive[9..].parse::<u64>() {
+                        tracing::debug!("Using s-maxage={} from Cache-Control", seconds);
+                        return Some(seconds);
+                    }
+                }
+            }
+        }
+    }
+
+    // Check Expires header as fallback
+    if let Some(expires) = headers.get("expires") {
+        if let Ok(expires_str) = expires.to_str() {
+            // Try to parse HTTP date format
+            if let Ok(expires_time) = httpdate::parse_http_date(expires_str) {
+                let now = SystemTime::now();
+                if let Ok(duration) = expires_time.duration_since(now) {
+                    let seconds = duration.as_secs();
+                    tracing::debug!("Using Expires header: {} seconds", seconds);
+                    return Some(seconds);
+                }
+            }
+        }
+    }
+
+    None
 }
 
 fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {

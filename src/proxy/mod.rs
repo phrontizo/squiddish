@@ -6,7 +6,7 @@ use crate::cache::TieredCache;
 use crate::config::Config;
 use crate::error::Result;
 use handler::ProxyHandler;
-use hyper::server::conn::http1;
+use hyper::server::conn::{http1, http2};
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use std::sync::Arc;
@@ -63,11 +63,12 @@ impl ProxyServer {
                     async move { handler.handle(req).await }
                 });
 
-                if let Err(err) = http1::Builder::new()
-                    .preserve_header_case(true)
-                    .title_case_headers(true)
+                // Try HTTP/2 first, fall back to HTTP/1.1
+                // Use auto detection based on ALPN or connection preface
+                let conn = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new());
+
+                if let Err(err) = conn
                     .serve_connection(io, service)
-                    .with_upgrades()
                     .await
                 {
                     tracing::error!("Error serving connection from {}: {}", peer_addr, err);

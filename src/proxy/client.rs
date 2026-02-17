@@ -27,13 +27,31 @@ pub async fn fetch_with_timeout(
     req: Request<Full<Bytes>>,
     timeout_secs: u64,
 ) -> Result<Response<Incoming>> {
+    let uri = req.uri().clone();
+    let host = uri.host().unwrap_or("unknown");
+
+    tracing::debug!("DNS lookup for: {}", host);
+
     timeout(Duration::from_secs(timeout_secs), client.request(req))
         .await
-        .map_err(|_| ProxyError::Io(std::io::Error::new(
-            std::io::ErrorKind::TimedOut,
-            "Request timed out"
-        )))?
-        .map_err(|e| ProxyError::HyperUtil(e.to_string()))
+        .map_err(|_| {
+            tracing::error!("DNS lookup or connection timeout for: {}", host);
+            ProxyError::Io(std::io::Error::new(
+                std::io::ErrorKind::TimedOut,
+                format!("Request timed out connecting to {}", host)
+            ))
+        })?
+        .map_err(|e| {
+            // Check if it's a DNS error
+            let error_msg = e.to_string();
+            if error_msg.contains("dns") || error_msg.contains("resolve") || error_msg.contains("Name or service not known") {
+                tracing::error!("DNS lookup failed for {}: {}", host, error_msg);
+                ProxyError::DnsError(format!("Failed to resolve hostname: {}", host))
+            } else {
+                tracing::error!("Connection failed to {}: {}", host, error_msg);
+                ProxyError::HyperUtil(error_msg)
+            }
+        })
 }
 
 pub async fn collect_body(body: Incoming, max_size: u64) -> Result<Bytes> {

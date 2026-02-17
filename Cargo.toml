@@ -24,6 +24,7 @@ hex = "0.4"
 async-trait = "0.1"
 pin-project = "1.1"
 chrono = "0.4"
+httpdate = "1.0"
 
 [dependencies.reqwest]
 version = "0.12"

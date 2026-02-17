@@ -2,6 +2,15 @@
 
 A high-performance HTTP caching proxy server written in Rust, optimized for package managers and content delivery.
 
+This project was created for 2 reasons:
+
+1. The existing apt-cache-ng wasn't working for me. I run quite a few Debian and Ubuntu VMs, and the caching just didn't
+   seem efficient; not to mention apt-cache-ng kept crashing for reasons I couldn't understand.
+2. I wanted to try out Claude for writing code and see how well it worked.
+
+This proxy should work effectively for other purposes such as video streaming, but I have only tested it with deb
+packages. At some point, I'll probably implement MITM support for HTTPS, but at the moment I don't need it.
+
 ## Features
 
 - **Streaming Architecture**: Efficient memory usage with concurrent request deduplication
@@ -13,7 +22,8 @@ A high-performance HTTP caching proxy server written in Rust, optimized for pack
 
 ## Limitations
 
-- **No HTTPS Interception**: Squiddish is not a MITM proxy. HTTPS traffic passes through via CONNECT tunneling without inspection or caching.
+- **No HTTPS Interception**: Squiddish is not a MITM proxy. HTTPS traffic passes through via CONNECT tunneling without
+  inspection or caching.
 - **HTTP/2 over plaintext only**: ALPN negotiation requires TLS termination, which is not implemented.
 
 ## Installation
@@ -40,47 +50,47 @@ All configuration is done via environment variables:
 
 ### Server Settings
 
-| Variable | Default | Description |
-|----------|---------|-------------|
+| Variable              | Default          | Description           |
+|-----------------------|------------------|-----------------------|
 | `SQUIDDISH_BIND_ADDR` | `127.0.0.1:3128` | Bind address and port |
 
 ### Cache Settings
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SQUIDDISH_CACHE_DIR` | `./cache` | Disk cache directory |
-| `SQUIDDISH_DISK_SIZE` | `100GB` | Max disk cache size (supports KB, MB, GB) |
-| `SQUIDDISH_MEMORY_SIZE` | `1GB` | In-memory cache size |
-| `SQUIDDISH_TTL` | `7d` | Default TTL for cached items (supports s, m, h, d) |
-| `SQUIDDISH_COMPRESSION` | `true` | Enable compression for cached data |
+| Variable                | Default   | Description                                        |
+|-------------------------|-----------|----------------------------------------------------|
+| `SQUIDDISH_CACHE_DIR`   | `./cache` | Disk cache directory                               |
+| `SQUIDDISH_DISK_SIZE`   | `100GB`   | Max disk cache size (supports KB, MB, GB)          |
+| `SQUIDDISH_MEMORY_SIZE` | `1GB`     | In-memory cache size                               |
+| `SQUIDDISH_TTL`         | `7d`      | Default TTL for cached items (supports s, m, h, d) |
+| `SQUIDDISH_COMPRESSION` | `true`    | Enable compression for cached data                 |
 
 ### APT-Specific Settings
 
 APT requests are automatically detected and given optimized TTL values:
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SQUIDDISH_APT_ENABLED` | `true` | Enable APT-specific caching logic |
-| `SQUIDDISH_APT_PACKAGE_TTL` | `30d` | TTL for `.deb` files (immutable) |
-| `SQUIDDISH_APT_LIST_TTL` | `1h` | TTL for package lists (frequently updated) |
-| `SQUIDDISH_APT_OTHER_TTL` | `1d` | TTL for other APT files |
+| Variable                    | Default | Description                                |
+|-----------------------------|---------|--------------------------------------------|
+| `SQUIDDISH_APT_ENABLED`     | `true`  | Enable APT-specific caching logic          |
+| `SQUIDDISH_APT_PACKAGE_TTL` | `30d`   | TTL for `.deb` files (immutable)           |
+| `SQUIDDISH_APT_LIST_TTL`    | `1h`    | TTL for package lists (frequently updated) |
+| `SQUIDDISH_APT_OTHER_TTL`   | `1d`    | TTL for other APT files                    |
 
 ### Security Settings
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `SQUIDDISH_MAX_BODY_SIZE` | `10GB` | Maximum response body size |
-| `SQUIDDISH_MAX_CONNECTIONS` | `1000` | Maximum concurrent connections |
-| `SQUIDDISH_TIMEOUT` | `5m` | Request timeout |
-| `SQUIDDISH_STRICT_HTTPS` | `false` | Only allow CONNECT on port 443 |
-| `SQUIDDISH_ALLOWED_HOSTS` | _(empty)_ | Comma-separated allowed host patterns (empty = allow all) |
-| `SQUIDDISH_BLOCKED_HOSTS` | _(empty)_ | Comma-separated blocked host patterns |
+| Variable                    | Default   | Description                                               |
+|-----------------------------|-----------|-----------------------------------------------------------|
+| `SQUIDDISH_MAX_BODY_SIZE`   | `10GB`    | Maximum response body size                                |
+| `SQUIDDISH_MAX_CONNECTIONS` | `1000`    | Maximum concurrent connections                            |
+| `SQUIDDISH_TIMEOUT`         | `5m`      | Request timeout                                           |
+| `SQUIDDISH_STRICT_HTTPS`    | `false`   | Only allow CONNECT on port 443                            |
+| `SQUIDDISH_ALLOWED_HOSTS`   | _(empty)_ | Comma-separated allowed host patterns (empty = allow all) |
+| `SQUIDDISH_BLOCKED_HOSTS`   | _(empty)_ | Comma-separated blocked host patterns                     |
 
 ### Logging
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `RUST_LOG` | `info` | Log level (error, warn, info, debug, trace) |
+| Variable   | Default | Description                                 |
+|------------|---------|---------------------------------------------|
+| `RUST_LOG` | `info`  | Log level (error, warn, info, debug, trace) |
 
 ## HTTP Headers
 
@@ -94,10 +104,10 @@ Squiddish respects standard HTTP caching headers:
 
 ### Response Headers Added
 
-| Header | Values | Description |
-|--------|--------|-------------|
-| `X-Cache` | `HIT`, `MISS` | Indicates cache hit/miss |
-| `X-Cache-TTL` | Seconds | Remaining TTL for cached items (on HIT) |
+| Header        | Values        | Description                             |
+|---------------|---------------|-----------------------------------------|
+| `X-Cache`     | `HIT`, `MISS` | Indicates cache hit/miss                |
+| `X-Cache-TTL` | Seconds       | Remaining TTL for cached items (on HIT) |
 
 ### Response Headers Preserved
 
@@ -110,32 +120,36 @@ Squiddish respects standard HTTP caching headers:
 
 ### Vary Header Support
 
-Squiddish automatically includes common request headers in the cache key when they are typically used with `Vary` responses:
+Squiddish automatically includes common request headers in the cache key when they are typically used with `Vary`
+responses:
+
 - `Accept-Encoding`: Different cache entries for gzip/br/identity
 - `Accept`: Different cache entries for JSON/HTML/XML responses
 - `User-Agent`: Different cache entries for mobile/desktop
 
-This ensures that responses that vary based on these headers are cached separately and served correctly to different clients.
+This ensures that responses that vary based on these headers are cached separately and served correctly to different
+clients.
 
 ### TTL Determination
 
 1. **APT Requests** (auto-detected by URL patterns):
-   - `.deb` files: 30 days (immutable packages)
-   - Package lists (`Packages`, `InRelease`, etc.): 1 hour
-   - Other APT files: 1 day
+    - `.deb` files: 30 days (immutable packages)
+    - Package lists (`Packages`, `InRelease`, etc.): 1 hour
+    - Other APT files: 1 day
 
 2. **Non-APT Requests**:
-   - Respects `Cache-Control: max-age` or `s-maxage`
-   - Falls back to `Expires` header
-   - Uses default TTL if no cache headers present
+    - Respects `Cache-Control: max-age` or `s-maxage`
+    - Falls back to `Expires` header
+    - Uses default TTL if no cache headers present
 
 3. **Cache Bypass**:
-   - Responses with `Cache-Control: no-store` or `private`
-   - Requests with `Cache-Control: no-cache` or `Pragma: no-cache`
+    - Responses with `Cache-Control: no-store` or `private`
+    - Requests with `Cache-Control: no-cache` or `Pragma: no-cache`
 
 ### Streaming & Deduplication
 
 When multiple clients request the same uncached resource:
+
 - Only one upstream request is made
 - Response is streamed to all waiting clients simultaneously
 - Response is cached for future requests
@@ -219,8 +233,5 @@ Squiddish uses Tokio's multi-threaded runtime with the following characteristics
 - **Non-blocking I/O**: All network operations are async, threads never block on I/O
 - **Scalability**: Can handle thousands of concurrent connections with minimal threads
 
-**Note**: Thread count is not configurable and defaults to the number of CPU cores. The async architecture means that thread count doesn't limit connection capacity.
-
-## License
-
-[Add your license here]
+**Note**: Thread count is not configurable and defaults to the number of CPU cores. The async architecture means that
+thread count doesn't limit connection capacity.

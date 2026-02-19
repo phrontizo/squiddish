@@ -84,9 +84,6 @@ pub struct CacheConfig {
     /// Disk cache directory
     pub cache_dir: PathBuf,
 
-    /// Enable compression for cached content
-    pub compression: bool,
-
     /// TTL for cache entries in seconds (default: 7 days)
     pub ttl_seconds: u64,
 }
@@ -144,7 +141,6 @@ impl Default for CacheConfig {
             memory_size: 1024 * 1024 * 1024, // 1GB
             disk_size: 100 * 1024 * 1024 * 1024, // 100GB
             cache_dir: PathBuf::from("./cache"),
-            compression: true,
             ttl_seconds: 7 * 24 * 60 * 60, // 7 days
         }
     }
@@ -205,11 +201,6 @@ impl Config {
 
         if let Some(dir) = get_var("SQUIDDISH_CACHE_DIR") {
             config.cache.cache_dir = dir.into();
-        }
-
-        if let Some(compression) = get_var("SQUIDDISH_COMPRESSION") {
-            config.cache.compression = compression.parse()
-                .map_err(|e| format!("Invalid SQUIDDISH_COMPRESSION '{}': {}", compression, e))?;
         }
 
         if let Some(ttl) = get_var("SQUIDDISH_TTL") {

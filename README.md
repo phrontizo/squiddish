@@ -14,23 +14,39 @@ packages. At some point, I'll probably implement MITM support for HTTPS, but at 
 ## Features
 
 - **Streaming Architecture**: Efficient memory usage with concurrent request deduplication
-- **Two-Tier Cache**: Memory (LRU) + Disk persistence
+- **Two-Tier Cache**: Memory (moka/TinyLFU) + Disk persistence
 - **APT-Aware Caching**: Intelligent TTL handling for Debian/Ubuntu packages
-- **HTTP/2 Support**: For direct HTTP connections
+- **HTTP/1.1 Support**: With connection keep-alive and header case preservation
 - **CONNECT Tunneling**: HTTPS passthrough without interception
+- **Graceful Shutdown**: Clean shutdown on SIGINT with in-flight request draining
+- **Connection Limiting**: Semaphore-based max concurrent connections
 - **Configurable via Environment Variables**: No config files required
 
 ## Limitations
 
 - **No HTTPS Interception**: Squiddish is not a MITM proxy. HTTPS traffic passes through via CONNECT tunneling without
   inspection or caching.
-- **HTTP/2 over plaintext only**: ALPN negotiation requires TLS termination, which is not implemented.
+- **HTTP/1.1 only**: HTTP/2 is not supported (would require TLS termination for ALPN negotiation).
 
 ## Installation
 
 ```bash
 cargo build --release
 ```
+
+## Docker
+
+```bash
+# Build and run with Docker Compose
+docker compose up -d
+
+# Or build the image directly
+docker build -t squiddish .
+docker run -d -p 3128:3128 -v ./cache:/cache squiddish
+```
+
+The Docker image uses a multi-stage build with musl for static linking, producing a minimal scratch-based image.
+Supports multi-arch: `linux/amd64` and `linux/arm64`.
 
 ## Usage
 
@@ -43,6 +59,8 @@ SQUIDDISH_BIND_ADDR=0.0.0.0:8080 SQUIDDISH_DISK_SIZE=2GB ./target/release/squidd
 ```
 
 Configure your client to use `http://localhost:3128` as the HTTP proxy.
+
+**Note**: Invalid configuration values cause the process to exit with a descriptive error message.
 
 ## Configuration
 
@@ -62,7 +80,6 @@ All configuration is done via environment variables:
 | `SQUIDDISH_DISK_SIZE`   | `100GB`   | Max disk cache size (supports KB, MB, GB)          |
 | `SQUIDDISH_MEMORY_SIZE` | `1GB`     | In-memory cache size                               |
 | `SQUIDDISH_TTL`         | `7d`      | Default TTL for cached items (supports s, m, h, d) |
-| `SQUIDDISH_COMPRESSION` | `true`    | Enable compression for cached data                 |
 
 ### APT-Specific Settings
 
@@ -94,41 +111,29 @@ APT requests are automatically detected and given optimized TTL values:
 
 ## HTTP Headers
 
-### Request Headers Respected
-
-Squiddish respects standard HTTP caching headers:
-
-- `Cache-Control`: Honors `no-cache`, `no-store`, `max-age`
-- `Pragma: no-cache`: Bypasses cache (HTTP/1.0 compatibility)
-- `Accept-Encoding`, `Accept`, `User-Agent`: Included in cache key for Vary support
-
 ### Response Headers Added
 
 | Header        | Values        | Description                             |
 |---------------|---------------|-----------------------------------------|
 | `X-Cache`     | `HIT`, `MISS` | Indicates cache hit/miss                |
 | `X-Cache-TTL` | Seconds       | Remaining TTL for cached items (on HIT) |
+| `Via`         | `1.1 squiddish` | Standard proxy identification header |
 
-### Response Headers Preserved
+### Cache Behavior
 
-- `Cache-Control`: Used to determine TTL (max-age, s-maxage)
-- `Expires`: Fallback TTL calculation
-- `Vary`: Respected for cache key generation (common headers: Accept-Encoding, Accept, User-Agent)
-- All origin headers are preserved in cached responses
+Squiddish respects standard HTTP caching semantics:
 
-## Cache Behavior
+- **`Cache-Control: s-maxage`** takes precedence over `max-age` (RFC 7234 shared cache behavior)
+- **`Cache-Control: no-store`, `no-cache`, `private`** bypass caching entirely
+- **`Pragma: no-cache`** respected for HTTP/1.0 compatibility
+- **`Expires`** header used as fallback when no `Cache-Control` is present
+- **Non-2xx responses** are never cached
+- **`Accept-Encoding`** is included in the cache key to serve correct content variants
 
-### Vary Header Support
+### Host Filtering
 
-Squiddish automatically includes common request headers in the cache key when they are typically used with `Vary`
-responses:
-
-- `Accept-Encoding`: Different cache entries for gzip/br/identity
-- `Accept`: Different cache entries for JSON/HTML/XML responses
-- `User-Agent`: Different cache entries for mobile/desktop
-
-This ensures that responses that vary based on these headers are cached separately and served correctly to different
-clients.
+Host patterns use domain suffix matching: pattern `example.com` matches `example.com` and `sub.example.com`
+but NOT `evil-example.com`.
 
 ### TTL Determination
 
@@ -138,27 +143,24 @@ clients.
     - Other APT files: 1 day
 
 2. **Non-APT Requests**:
-    - Respects `Cache-Control: max-age` or `s-maxage`
+    - Respects `Cache-Control: s-maxage` (highest priority)
+    - Falls back to `Cache-Control: max-age`
     - Falls back to `Expires` header
     - Uses default TTL if no cache headers present
-
-3. **Cache Bypass**:
-    - Responses with `Cache-Control: no-store` or `private`
-    - Requests with `Cache-Control: no-cache` or `Pragma: no-cache`
 
 ### Streaming & Deduplication
 
 When multiple clients request the same uncached resource:
 
 - Only one upstream request is made
-- Response is streamed to all waiting clients simultaneously
-- Response is cached for future requests
-- Efficient memory usage (no buffering entire response)
+- Response is streamed to all waiting clients simultaneously via broadcast channels
+- Late joiners receive accumulated chunks before joining the live stream
+- Response is cached after the download completes
 
 ### Cache Storage
 
-- **Memory Cache**: LRU eviction, fastest access
-- **Disk Cache**: Persistent across restarts
+- **Memory Cache**: moka concurrent cache with TinyLFU admission policy, weighted by entry size
+- **Disk Cache**: Persistent across restarts, sharded by content hash, VecDeque-based eviction
 - **Two-tier lookup**: Checks memory first, then disk
 - **Automatic promotion**: Disk hits are promoted to memory
 
@@ -176,7 +178,7 @@ Acquire::http::Proxy "http://127.0.0.1:3128";
 ### Running Tests
 
 ```bash
-# All tests
+# All tests (68 total: 30 unit + 30 bin + 8 integration)
 cargo test
 
 # Unit tests only
@@ -193,45 +195,75 @@ RUST_LOG=debug cargo test
 
 ```
 src/
-├── main.rs              # Entry point, server setup
+├── main.rs              # Entry point, logging setup, config loading
 ├── lib.rs               # Public module exports
-├── config.rs            # Environment variable configuration
-├── error.rs             # Error types
-├── apt.rs               # APT request detection
+├── config.rs            # Environment variable configuration with validation
+├── error.rs             # Error types (thiserror)
+├── apt.rs               # APT request detection and categorization
 ├── cache/
-│   ├── mod.rs           # Cache entry types
-│   ├── key.rs           # Cache key generation
-│   ├── memory.rs        # In-memory LRU cache
-│   ├── disk.rs          # Disk-based cache
-│   └── tiered.rs        # Two-tier cache coordinator
+│   ├── mod.rs           # CacheEntry, TieredCache coordinator
+│   ├── key.rs           # SHA-256 cache key generation with sharding
+│   ├── memory.rs        # In-memory cache (moka concurrent cache)
+│   ├── disk.rs          # Disk-based cache with VecDeque eviction
+│   └── inflight.rs      # In-flight download deduplication (broadcast channels)
 └── proxy/
-    ├── mod.rs           # HTTP server setup
-    ├── handler.rs       # Request handling & streaming
-    ├── client.rs        # Upstream HTTP client
-    └── tunnel.rs        # CONNECT tunnel handling
+    ├── mod.rs           # ProxyServer, TCP accept loop, connection limiting, graceful shutdown
+    ├── handler.rs       # Request routing, caching logic, streaming downloads
+    ├── client.rs        # Upstream HTTP client (hyper-util)
+    ├── tunnel.rs        # CONNECT tunnel (copy_bidirectional)
+    └── streaming.rs     # StreamingBody (BroadcastStream-backed hyper Body impl)
 
 tests/
-└── integration_test.rs  # Full proxy integration tests
+└── integration_test.rs  # Full proxy integration tests with test HTTP server
+```
+
+## Architecture
+
+```
+Client Request
+       │
+       ▼
+  ┌─────────┐     ┌─────────────┐
+  │ Accept   │────▶│ Semaphore   │  (connection limiting)
+  │ Loop     │     │ Permit      │
+  └─────────┘     └──────┬──────┘
+                         │
+                         ▼
+                 ┌───────────────┐
+                 │ ProxyHandler  │
+                 └───────┬───────┘
+                         │
+            ┌────────────┼────────────┐
+            ▼            ▼            ▼
+       CONNECT       GET/HEAD      Other
+       (tunnel)     (cacheable)   (passthrough)
+            │            │
+            ▼            ▼
+    ┌──────────┐  ┌─────────────┐
+    │ TCP      │  │ TieredCache │
+    │ bidir    │  │ lookup      │
+    │ copy     │  └──────┬──────┘
+    └──────────┘    HIT? │ MISS?
+                    │    │
+                    ▼    ▼
+               Return  ┌──────────┐
+               cached  │ Inflight │──▶ Join existing?
+                       │ check    │
+                       └────┬─────┘
+                            │ New download
+                            ▼
+                     ┌──────────────┐
+                     │ Fetch +      │
+                     │ Broadcast    │──▶ Stream to all clients
+                     │ + Cache      │
+                     └──────────────┘
 ```
 
 ## Performance Characteristics
 
-- **Memory-efficient streaming**: No full response buffering
+- **Memory-efficient streaming**: No full response buffering during downloads
 - **Concurrent request deduplication**: N clients = 1 upstream request
-- **Fast cache lookups**: O(1) memory cache, optimized disk I/O
+- **Lock-free memory cache reads**: moka uses concurrent data structures internally
 - **Async I/O**: Non-blocking throughout using Tokio
 - **Multi-threaded runtime**: Tokio work-stealing scheduler uses all CPU cores
-- **Zero-copy where possible**: Direct streaming from cache to client
-
-### Threading Model
-
-Squiddish uses Tokio's multi-threaded runtime with the following characteristics:
-
-- **Default thread count**: Automatically uses all available CPU cores
-- **Work-stealing scheduler**: Idle threads steal tasks from busy threads for optimal load balancing
-- **Async task spawning**: Each TCP connection spawns a lightweight async task via `tokio::spawn()`
-- **Non-blocking I/O**: All network operations are async, threads never block on I/O
-- **Scalability**: Can handle thousands of concurrent connections with minimal threads
-
-**Note**: Thread count is not configurable and defaults to the number of CPU cores. The async architecture means that
-thread count doesn't limit connection capacity.
+- **Connection pooling**: Upstream connections are reused via hyper-util's connection pool

@@ -8,9 +8,7 @@ pub use disk::DiskCache;
 pub use key::CacheKey;
 pub use inflight::{InflightDownloads, DownloadChunk};
 
-use crate::error::Result;
 use bytes::Bytes;
-use async_trait::async_trait;
 use std::time::SystemTime;
 
 #[derive(Debug, Clone)]
@@ -38,17 +36,6 @@ impl CacheEntry {
     }
 }
 
-#[async_trait]
-pub trait Cache: Send + Sync {
-    async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>>;
-    async fn put(&self, key: CacheKey, entry: CacheEntry) -> Result<()>;
-    async fn remove(&self, key: &CacheKey) -> Result<()>;
-    #[allow(dead_code)]
-    async fn clear(&self) -> Result<()>;
-    #[allow(dead_code)]
-    async fn size(&self) -> usize;
-}
-
 /// Two-tier cache: memory and disk
 pub struct TieredCache {
     memory: MemoryCache,
@@ -61,7 +48,7 @@ impl TieredCache {
         memory_size: usize,
         disk_cache_dir: std::path::PathBuf,
         disk_size: u64,
-    ) -> Result<Self> {
+    ) -> crate::error::Result<Self> {
         let memory = MemoryCache::new(memory_size);
         let disk = DiskCache::new(disk_cache_dir, disk_size).await?;
         let inflight = InflightDownloads::new();
@@ -73,15 +60,15 @@ impl TieredCache {
         &self.inflight
     }
 
-    pub async fn get(&self, key: &CacheKey) -> Result<Option<CacheEntry>> {
+    pub async fn get(&self, key: &CacheKey) -> crate::error::Result<Option<CacheEntry>> {
         // Try memory first
-        if let Some(entry) = self.memory.get(key).await? {
+        if let Some(entry) = self.memory.get(key).await {
             if !entry.is_expired() {
                 tracing::debug!("Cache hit (memory): {}", key.hash_hex());
                 return Ok(Some(entry));
             }
             // Expired, remove from memory
-            let _ = self.memory.remove(key).await;
+            self.memory.remove(key).await;
         }
 
         // Try disk second
@@ -89,7 +76,7 @@ impl TieredCache {
             if !entry.is_expired() {
                 tracing::debug!("Cache hit (disk): {}", key.hash_hex());
                 // Promote to memory cache
-                let _ = self.memory.put(key.clone(), entry.clone()).await;
+                self.memory.put(key.clone(), entry.clone()).await;
                 return Ok(Some(entry));
             }
             // Expired, remove from disk
@@ -100,39 +87,17 @@ impl TieredCache {
         Ok(None)
     }
 
-    pub async fn put(&self, key: CacheKey, entry: CacheEntry) -> Result<()> {
+    pub async fn put(&self, key: CacheKey, entry: CacheEntry) -> crate::error::Result<()> {
         // Always write to disk for large items
         if entry.size() > 1024 * 1024 {
             // > 1MB goes to disk
             self.disk.put(key.clone(), entry.clone()).await?;
         }
 
-        // Try to fit in a memory cache
-        self.memory.put(key, entry).await?;
+        // Try to fit in memory cache
+        self.memory.put(key, entry).await;
         Ok(())
     }
-
-    #[allow(dead_code)]
-    pub async fn remove(&self, key: &CacheKey) -> Result<()> {
-        let _ = self.memory.remove(key).await;
-        let _ = self.disk.remove(key).await;
-        Ok(())
-    }
-
-    #[allow(dead_code)]
-    pub async fn stats(&self) -> CacheStats {
-        CacheStats {
-            memory_size: self.memory.size().await,
-            disk_size: self.disk.size().await,
-        }
-    }
-}
-
-#[allow(dead_code)]
-#[derive(Debug, Clone)]
-pub struct CacheStats {
-    pub memory_size: usize,
-    pub disk_size: usize,
 }
 
 #[cfg(test)]

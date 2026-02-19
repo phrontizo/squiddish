@@ -1,5 +1,3 @@
-version: '3.8'
-
 services:
   squiddish:
     build: .
@@ -8,7 +6,7 @@ services:
     ports:
       - "3128:3128"
     volumes:
-      - ./cache:/cache
+      - cache-data:/cache
     environment:
       # Server settings
       # Bind address (0.0.0.0 to accept connections from outside container)
@@ -20,7 +18,6 @@ services:
       SQUIDDISH_MEMORY_SIZE: "1GB"
       SQUIDDISH_DISK_SIZE: "100GB"
       SQUIDDISH_CACHE_DIR: "/cache"
-      SQUIDDISH_COMPRESSION: "true"
 
       # Time units: s, m, h, d (case-insensitive)
       # Examples: "7d", "2h", "5m", "300" (plain numbers = seconds)
@@ -43,10 +40,12 @@ services:
       # SQUIDDISH_BLOCKED_HOSTS: "malicious.com"
 
       # Logging
-      RUST_LOG: "info"
+      RUST_LOG: "squiddish=info"
 
     restart: unless-stopped
 
-    # Note: FROM scratch has no shell, so healthcheck disabled
-    # Use port check externally: docker ps shows port 3128 open
-    # Or monitor logs: docker logs squiddish-proxy
+    # Note: FROM scratch has no shell, so healthcheck is not possible.
+    # Monitor externally: docker ps (port 3128 open) or docker logs squiddish-proxy
+
+volumes:
+  cache-data:

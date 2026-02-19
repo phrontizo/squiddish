@@ -1,91 +1,35 @@
-use crate::error::{ProxyError, Result};
+use crate::error::Result;
 use hyper::upgrade::Upgraded;
 use hyper_util::rt::TokioIo;
 use std::net::SocketAddr;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-/// Handle HTTPS CONNECT tunneling
+/// Handle HTTPS CONNECT tunneling using a pre-established target connection.
+/// Uses copy_bidirectional which correctly handles TCP half-close,
+/// ensuring data in both directions is fully drained before closing.
 pub async fn handle_connect_tunnel(
     upgraded: Upgraded,
-    target_host: String,
-    target_port: u16,
+    mut target_stream: TcpStream,
     peer_addr: SocketAddr,
+    target_addr: String,
 ) -> Result<()> {
     tracing::info!(
-        "Establishing CONNECT tunnel from {} to {}:{}",
+        "Establishing CONNECT tunnel from {} to {}",
         peer_addr,
-        target_host,
-        target_port
+        target_addr
     );
 
-    // Resolve and connect to target
-    let target_addr = format!("{}:{}", target_host, target_port);
-    let target_stream = TcpStream::connect(&target_addr).await.map_err(|e| {
-        ProxyError::Tunnel(format!("Failed to connect to {}: {}", target_addr, e))
-    })?;
+    let mut client_stream = TokioIo::new(upgraded);
 
-    tracing::debug!("Connected to target {}", target_addr);
-
-    // Wrap upgraded connection for async IO
-    let upgraded_io = TokioIo::new(upgraded);
-
-    // Split both streams
-    let (mut client_reader, mut client_writer) = tokio::io::split(upgraded_io);
-    let (mut target_reader, mut target_writer) = target_stream.into_split();
-
-    // Bidirectional copy with graceful shutdown
-    let client_to_target = async {
-        let mut buf = vec![0u8; 8192];
-        loop {
-            match client_reader.read(&mut buf).await {
-                Ok(0) => {
-                    tracing::debug!("Client closed connection to {}", target_addr);
-                    let _ = target_writer.shutdown().await;
-                    return Ok::<_, std::io::Error>(());
-                }
-                Ok(n) => {
-                    target_writer.write_all(&buf[..n]).await?;
-                }
-                Err(e) => {
-                    tracing::debug!("Error reading from client: {}", e);
-                    return Err(e);
-                }
-            }
+    match tokio::io::copy_bidirectional(&mut client_stream, &mut target_stream).await {
+        Ok((from_client, from_target)) => {
+            tracing::debug!(
+                "Tunnel closed for {} (client->target: {} bytes, target->client: {} bytes)",
+                target_addr, from_client, from_target
+            );
         }
-    };
-
-    let target_to_client = async {
-        let mut buf = vec![0u8; 8192];
-        loop {
-            match target_reader.read(&mut buf).await {
-                Ok(0) => {
-                    tracing::debug!("Target closed connection from {}", target_addr);
-                    let _ = client_writer.shutdown().await;
-                    return Ok::<_, std::io::Error>(());
-                }
-                Ok(n) => {
-                    client_writer.write_all(&buf[..n]).await?;
-                }
-                Err(e) => {
-                    tracing::debug!("Error reading from target: {}", e);
-                    return Err(e);
-                }
-            }
-        }
-    };
-
-    // Run both directions concurrently
-    tokio::select! {
-        result = client_to_target => {
-            if let Err(e) = result {
-                tracing::debug!("Client to target tunnel error: {}", e);
-            }
-        }
-        result = target_to_client => {
-            if let Err(e) = result {
-                tracing::debug!("Target to client tunnel error: {}", e);
-            }
+        Err(e) => {
+            tracing::debug!("Tunnel error for {}: {}", target_addr, e);
         }
     }
 
@@ -97,7 +41,7 @@ pub async fn handle_connect_tunnel(
 mod tests {
     #[test]
     fn test_tunnel_module() {
-        // Basic module test
+        // Module compiles and loads
         assert!(true);
     }
 }

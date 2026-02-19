@@ -31,13 +31,17 @@ impl InflightDownloads {
         }
     }
 
-    /// Check if a download is in progress and subscribe to it
+    /// Check if a download is in progress and subscribe to it.
+    /// Uses a write lock to prevent add_chunk from running between subscribe
+    /// and accumulated read, which would cause duplicate data in the stream.
     pub fn join_download(&self, key: &CacheKey) -> Option<(broadcast::Receiver<DownloadChunk>, Vec<Bytes>)> {
         let key_str = key.hash_hex();
-        let downloads = self.downloads.read();
+        let downloads = self.downloads.write();
 
         if let Some(state) = downloads.get(&key_str) {
-            // Download already in progress
+            // Subscribe first, then read accumulated.
+            // The write lock blocks add_chunk (which needs a read lock),
+            // so no chunks can arrive between subscribe and accumulated read.
             let receiver = state.sender.subscribe();
             let accumulated = state.accumulated.read().clone();
             tracing::debug!("Joining existing download for {}, already have {} chunks", key_str, accumulated.len());

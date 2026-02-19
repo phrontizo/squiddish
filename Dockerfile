@@ -25,11 +25,12 @@ RUN case "$(uname -m)" in \
 # Copy manifests
 COPY Cargo.toml ./
 
-# Create dummy main to build dependencies
+# Create dummy src files to build dependencies (both lib.rs and main.rs needed)
 RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
     mkdir src && \
     echo "fn main() {}" > src/main.rs && \
-    cargo build --release --target $RUST_TARGET && \
+    touch src/lib.rs && \
+    cargo build --release --target $RUST_TARGET 2>/dev/null || true && \
     rm -rf src
 
 # Copy source code
@@ -38,9 +39,8 @@ COPY tests ./tests
 
 # Build the actual binary with static linking
 RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
-    touch src/main.rs && \
+    touch src/main.rs src/lib.rs && \
     cargo build --release --target $RUST_TARGET && \
-    strip target/$RUST_TARGET/release/squiddish && \
     cp target/$RUST_TARGET/release/squiddish /build/squiddish
 
 # Runtime stage - from scratch for minimal image
@@ -60,7 +60,6 @@ ENV SQUIDDISH_BIND_ADDR="0.0.0.0:3128" \
     SQUIDDISH_MEMORY_SIZE="1GB" \
     SQUIDDISH_DISK_SIZE="100GB" \
     SQUIDDISH_CACHE_DIR="/cache" \
-    SQUIDDISH_COMPRESSION="true" \
     SQUIDDISH_TTL="7d" \
     SQUIDDISH_APT_ENABLED="true" \
     SQUIDDISH_APT_LIST_TTL="1h" \

@@ -81,7 +81,7 @@ impl ProxyHandler {
                 .security
                 .allowed_hosts
                 .iter()
-                .any(|pattern| host.contains(pattern));
+                .any(|pattern| host_matches(host, pattern));
 
             if !allowed {
                 return Err(ProxyError::ValidationFailed(format!(
@@ -94,7 +94,7 @@ impl ProxyHandler {
         // Check blocked hosts
         if let Some(host) = req.uri().host() {
             for blocked in &self.config.security.blocked_hosts {
-                if host.contains(blocked) {
+                if host_matches(host, blocked) {
                     return Err(ProxyError::ValidationFailed(format!(
                         "Host blocked: {}",
                         host
@@ -131,23 +131,23 @@ impl ProxyHandler {
             )));
         }
 
-        // Test DNS resolution and connection BEFORE sending 200 OK
+        // Connect to target BEFORE sending 200 OK.
         // This prevents returning success for non-existent domains
+        // and eliminates the double-connection overhead.
         let target_addr = format!("{}:{}", host, port);
-        let _test_connection = tokio::net::TcpStream::connect(&target_addr).await.map_err(|e| {
+        let target_stream = tokio::net::TcpStream::connect(&target_addr).await.map_err(|e| {
             ProxyError::Tunnel(format!("Failed to connect to {}: {}", target_addr, e))
         })?;
-        // Connection succeeds, close it immediately as we'll reconnect after upgrade
-        drop(_test_connection);
 
         let peer_addr = self.peer_addr;
 
         // Now send 200 Connection Established (we know the target is reachable)
+        // Pass the pre-established connection to the tunnel handler
         tokio::spawn(async move {
             match hyper::upgrade::on(req).await {
                 Ok(upgraded) => {
                     if let Err(e) =
-                        handle_connect_tunnel(upgraded, host, port, peer_addr).await
+                        handle_connect_tunnel(upgraded, target_stream, peer_addr, target_addr).await
                     {
                         tracing::error!("Tunnel error: {}", e);
                     }
@@ -317,7 +317,6 @@ impl ProxyHandler {
             Err(e) => {
                 // Send error back through oneshot channel if provided
                 if let Some(tx) = status_tx {
-                    // Convert error to string for cloning
                     let _ = tx.send(Err(ProxyError::Network(e.to_string())));
                 }
                 return Err(e);
@@ -362,6 +361,12 @@ impl ProxyHandler {
             }
         }
 
+        // Only cache responses that are cacheable
+        if !should_cache_response(status, &response_headers) {
+            tracing::debug!("Response not cacheable: status={}, uri={}", status, cache_key.uri());
+            return Ok(());
+        }
+
         // Combine all chunks for caching
         let mut full_body = Vec::new();
         for chunk in accumulated_data {
@@ -404,21 +409,30 @@ impl ProxyHandler {
     }
 
     fn parse_cache_control_headers(headers: &hyper::HeaderMap) -> Option<u64> {
-        // Check Cache-Control header
         if let Some(cache_control) = headers.get("cache-control") {
             if let Ok(value) = cache_control.to_str() {
+                let mut max_age = None;
+                let mut s_maxage = None;
+
                 for directive in value.split(',') {
                     let directive = directive.trim();
-                    if directive.starts_with("max-age=") {
-                        if let Ok(seconds) = directive[8..].parse::<u64>() {
-                            return Some(seconds);
-                        }
-                    }
                     if directive.starts_with("s-maxage=") {
                         if let Ok(seconds) = directive[9..].parse::<u64>() {
-                            return Some(seconds);
+                            s_maxage = Some(seconds);
+                        }
+                    } else if directive.starts_with("max-age=") {
+                        if let Ok(seconds) = directive[8..].parse::<u64>() {
+                            max_age = Some(seconds);
                         }
                     }
+                }
+
+                // s-maxage takes precedence over max-age for shared caches (RFC 7234)
+                if let Some(ttl) = s_maxage {
+                    return Some(ttl);
+                }
+                if let Some(ttl) = max_age {
+                    return Some(ttl);
                 }
             }
         }
@@ -494,15 +508,13 @@ impl ProxyHandler {
         let uri = req.uri().to_string();
         let method = req.method().as_str();
 
-        // For proper Vary support, we'd need to check if there's already a cached
-        // response with Vary headers. For now, we include common vary headers
-        // that are typically used (Accept-Encoding, Accept, User-Agent)
+        // Include Accept-Encoding in cache key since servers commonly vary on it.
+        // User-Agent is excluded to avoid massive cache fragmentation.
         let vary_headers: Vec<(String, String)> = req.headers()
             .iter()
             .filter_map(|(name, value)| {
                 let name_str = name.as_str().to_lowercase();
-                // Include common headers that servers typically vary on
-                if name_str == "accept-encoding" || name_str == "accept" || name_str == "user-agent" {
+                if name_str == "accept-encoding" {
                     Some((name.as_str().to_string(), value.to_str().unwrap_or("").to_string()))
                 } else {
                     None
@@ -595,6 +607,44 @@ impl ProxyHandler {
     }
 }
 
+/// Check if a response should be cached based on status and headers
+fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool {
+    // Only cache successful responses
+    if !status.is_success() {
+        return false;
+    }
+
+    // Check Cache-Control directives
+    if let Some(cc) = headers.get("cache-control") {
+        if let Ok(value) = cc.to_str() {
+            for directive in value.split(',') {
+                let directive = directive.trim().to_lowercase();
+                if directive == "no-store" || directive == "no-cache" || directive == "private" {
+                    return false;
+                }
+            }
+        }
+    }
+
+    // Check Pragma: no-cache (HTTP/1.0 compatibility)
+    if let Some(pragma) = headers.get("pragma") {
+        if let Ok(value) = pragma.to_str() {
+            if value.contains("no-cache") {
+                return false;
+            }
+        }
+    }
+
+    true
+}
+
+/// Match a hostname against a pattern using exact match or subdomain suffix.
+/// Pattern "example.com" matches "example.com" and "sub.example.com"
+/// but NOT "evil-example.com".
+fn host_matches(host: &str, pattern: &str) -> bool {
+    host == pattern || host.ends_with(&format!(".{}", pattern))
+}
+
 fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
     let authority = uri
         .authority()
@@ -614,7 +664,6 @@ fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
         _ => Err(ProxyError::InvalidUri("Invalid CONNECT URI".to_string())),
     }
 }
-
 
 fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, StreamingBody>> {
     let mut builder = Response::builder().status(entry.status);
@@ -661,4 +710,55 @@ mod tests {
         assert_eq!(port, 443);
     }
 
+    #[test]
+    fn test_host_matches() {
+        assert!(host_matches("example.com", "example.com"));
+        assert!(host_matches("sub.example.com", "example.com"));
+        assert!(host_matches("deep.sub.example.com", "example.com"));
+        assert!(!host_matches("evil-example.com", "example.com"));
+        assert!(!host_matches("example.com.attacker.org", "example.com"));
+    }
+
+    #[test]
+    fn test_should_cache_response() {
+        let mut headers = hyper::HeaderMap::new();
+        assert!(should_cache_response(StatusCode::OK, &headers));
+
+        // Non-2xx should not be cached
+        assert!(!should_cache_response(StatusCode::NOT_FOUND, &headers));
+        assert!(!should_cache_response(StatusCode::INTERNAL_SERVER_ERROR, &headers));
+
+        // no-store
+        headers.insert("cache-control", "no-store".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // no-cache
+        headers.insert("cache-control", "no-cache".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // private
+        headers.insert("cache-control", "private, max-age=300".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // Normal cacheable response
+        headers.insert("cache-control", "public, max-age=3600".parse().unwrap());
+        assert!(should_cache_response(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_s_maxage_precedence() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // s-maxage should take precedence over max-age
+        headers.insert("cache-control", "max-age=0, s-maxage=3600".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(3600));
+
+        // max-age alone
+        headers.insert("cache-control", "max-age=300".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(300));
+
+        // s-maxage alone
+        headers.insert("cache-control", "s-maxage=600".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(600));
+    }
 }

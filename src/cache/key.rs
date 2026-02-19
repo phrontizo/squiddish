@@ -31,16 +31,10 @@ impl CacheKey {
         }
     }
 
-    #[allow(dead_code)]
-    pub fn hash(&self) -> &[u8; 32] {
-        &self.hash
-    }
-
     pub fn hash_hex(&self) -> String {
         hex::encode(self.hash)
     }
 
-    #[allow(dead_code)]
     pub fn uri(&self) -> &str {
         &self.uri
     }

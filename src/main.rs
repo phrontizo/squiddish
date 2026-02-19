@@ -25,8 +25,11 @@ async fn main() -> Result<()> {
         .with(tracing_subscriber::fmt::layer())
         .init();
 
-    // Load configuration from environment variables
-    let config = Config::from_env();
+    // Load configuration from environment variables (terminates on invalid values)
+    let config = Config::from_env().unwrap_or_else(|e| {
+        eprintln!("Configuration error: {}", e);
+        std::process::exit(1);
+    });
 
     // Log external IP address
     if let Ok(ip) = get_external_ip().await {

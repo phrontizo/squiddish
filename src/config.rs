@@ -12,16 +12,16 @@ fn parse_size(s: &str) -> Option<u64> {
     }
 
     // Parse with units
-    let (num_str, unit) = if s.ends_with("TB") {
-        (&s[..s.len()-2], 1024u64 * 1024 * 1024 * 1024)
-    } else if s.ends_with("GB") {
-        (&s[..s.len()-2], 1024u64 * 1024 * 1024)
-    } else if s.ends_with("MB") {
-        (&s[..s.len()-2], 1024u64 * 1024)
-    } else if s.ends_with("KB") {
-        (&s[..s.len()-2], 1024u64)
-    } else if s.ends_with('B') {
-        (&s[..s.len()-1], 1u64)
+    let (num_str, unit) = if let Some(n) = s.strip_suffix("TB") {
+        (n, 1024u64 * 1024 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("GB") {
+        (n, 1024u64 * 1024 * 1024)
+    } else if let Some(n) = s.strip_suffix("MB") {
+        (n, 1024u64 * 1024)
+    } else if let Some(n) = s.strip_suffix("KB") {
+        (n, 1024u64)
+    } else if let Some(n) = s.strip_suffix('B') {
+        (n, 1u64)
     } else {
         return None;
     };
@@ -45,14 +45,14 @@ fn parse_duration(s: &str) -> Option<u64> {
     }
 
     // Parse with units
-    let (num_str, multiplier) = if s.ends_with('d') {
-        (&s[..s.len()-1], 86400u64) // days
-    } else if s.ends_with('h') {
-        (&s[..s.len()-1], 3600u64) // hours
-    } else if s.ends_with('m') {
-        (&s[..s.len()-1], 60u64) // minutes
-    } else if s.ends_with('s') {
-        (&s[..s.len()-1], 1u64) // seconds
+    let (num_str, multiplier) = if let Some(n) = s.strip_suffix('d') {
+        (n, 86400u64)
+    } else if let Some(n) = s.strip_suffix('h') {
+        (n, 3600u64)
+    } else if let Some(n) = s.strip_suffix('m') {
+        (n, 60u64)
+    } else if let Some(n) = s.strip_suffix('s') {
+        (n, 1u64)
     } else {
         return None;
     };
@@ -96,10 +96,6 @@ pub struct AptConfig {
     /// Enable APT-specific optimizations
     pub enabled: bool,
 
-    /// APT repositories to cache
-    #[allow(dead_code)]
-    pub repositories: Vec<String>,
-
     /// Cache package lists longer (default: 1 hour)
     pub list_ttl_seconds: u64,
 
@@ -131,59 +127,10 @@ pub struct SecurityConfig {
     pub blocked_hosts: Vec<String>,
 }
 
-fn default_bind_addr() -> SocketAddr {
-    "127.0.0.1:3128".parse().unwrap()
-}
-
-fn default_memory_cache_size() -> usize {
-    1024 * 1024 * 1024 // 1GB
-}
-
-fn default_disk_cache_size() -> u64 {
-    100 * 1024 * 1024 * 1024 // 100GB
-}
-
-fn default_cache_dir() -> PathBuf {
-    PathBuf::from("./cache")
-}
-
-fn default_cache_ttl() -> u64 {
-    7 * 24 * 60 * 60 // 7 days
-}
-
-fn default_apt_list_ttl() -> u64 {
-    60 * 60 // 1 hour
-}
-
-fn default_apt_package_ttl() -> u64 {
-    30 * 24 * 60 * 60 // 30 days
-}
-
-fn default_apt_other_ttl() -> u64 {
-    24 * 60 * 60 // 1 day
-}
-
-fn default_max_body_size() -> u64 {
-    10 * 1024 * 1024 * 1024 // 10GB
-}
-
-fn default_max_connections() -> usize {
-    1000
-}
-
-fn default_timeout() -> u64 {
-    300 // 5 minutes
-}
-
-#[allow(dead_code)]
-fn default_true() -> bool {
-    true
-}
-
 impl Default for Config {
     fn default() -> Self {
         Self {
-            bind_addr: default_bind_addr(),
+            bind_addr: "127.0.0.1:3128".parse().unwrap(),
             cache: CacheConfig::default(),
             apt: AptConfig::default(),
             security: SecurityConfig::default(),
@@ -194,11 +141,11 @@ impl Default for Config {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            memory_size: default_memory_cache_size(),
-            disk_size: default_disk_cache_size(),
-            cache_dir: default_cache_dir(),
+            memory_size: 1024 * 1024 * 1024, // 1GB
+            disk_size: 100 * 1024 * 1024 * 1024, // 100GB
+            cache_dir: PathBuf::from("./cache"),
             compression: true,
-            ttl_seconds: default_cache_ttl(),
+            ttl_seconds: 7 * 24 * 60 * 60, // 7 days
         }
     }
 }
@@ -207,10 +154,9 @@ impl Default for AptConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            repositories: vec![],
-            list_ttl_seconds: default_apt_list_ttl(),
-            package_ttl_seconds: default_apt_package_ttl(),
-            other_ttl_seconds: default_apt_other_ttl(),
+            list_ttl_seconds: 60 * 60, // 1 hour
+            package_ttl_seconds: 30 * 24 * 60 * 60, // 30 days
+            other_ttl_seconds: 24 * 60 * 60, // 1 day
         }
     }
 }
@@ -218,9 +164,9 @@ impl Default for AptConfig {
 impl Default for SecurityConfig {
     fn default() -> Self {
         Self {
-            max_body_size: default_max_body_size(),
-            max_connections: default_max_connections(),
-            timeout_seconds: default_timeout(),
+            max_body_size: 10 * 1024 * 1024 * 1024, // 10GB
+            max_connections: 1000,
+            timeout_seconds: 300, // 5 minutes
             strict_https: true,
             allowed_hosts: vec![],
             blocked_hosts: vec![],
@@ -229,91 +175,91 @@ impl Default for SecurityConfig {
 }
 
 impl Config {
-    /// Load config from environment variables with SQUIDDISH_ prefix
-    pub fn from_env() -> Self {
+    /// Load config from environment variables with SQUIDDISH_ prefix.
+    /// Returns an error if any set variable has an invalid value.
+    pub fn from_env() -> Result<Self, String> {
+        Self::from_vars(|key| std::env::var(key).ok())
+    }
+
+    /// Load config from a variable lookup function.
+    /// Returns an error if any provided variable has an invalid value.
+    pub fn from_vars(get_var: impl Fn(&str) -> Option<String>) -> Result<Self, String> {
         let mut config = Self::default();
 
         // Bind address
-        if let Ok(addr) = std::env::var("SQUIDDISH_BIND_ADDR") {
-            if let Ok(parsed) = addr.parse() {
-                config.bind_addr = parsed;
-            }
+        if let Some(addr) = get_var("SQUIDDISH_BIND_ADDR") {
+            config.bind_addr = addr.parse()
+                .map_err(|e| format!("Invalid SQUIDDISH_BIND_ADDR '{}': {}", addr, e))?;
         }
 
         // Cache config
-        if let Ok(size) = std::env::var("SQUIDDISH_MEMORY_SIZE") {
-            if let Some(parsed) = parse_size(&size) {
-                config.cache.memory_size = parsed as usize;
-            }
+        if let Some(size) = get_var("SQUIDDISH_MEMORY_SIZE") {
+            config.cache.memory_size = parse_size(&size)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_MEMORY_SIZE '{}': expected number with optional unit (KB, MB, GB, TB)", size))? as usize;
         }
 
-        if let Ok(size) = std::env::var("SQUIDDISH_DISK_SIZE") {
-            if let Some(parsed) = parse_size(&size) {
-                config.cache.disk_size = parsed;
-            }
+        if let Some(size) = get_var("SQUIDDISH_DISK_SIZE") {
+            config.cache.disk_size = parse_size(&size)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_DISK_SIZE '{}': expected number with optional unit (KB, MB, GB, TB)", size))?;
         }
 
-        if let Ok(dir) = std::env::var("SQUIDDISH_CACHE_DIR") {
+        if let Some(dir) = get_var("SQUIDDISH_CACHE_DIR") {
             config.cache.cache_dir = dir.into();
         }
 
-        if let Ok(compression) = std::env::var("SQUIDDISH_COMPRESSION") {
-            config.cache.compression = compression.parse().unwrap_or(true);
+        if let Some(compression) = get_var("SQUIDDISH_COMPRESSION") {
+            config.cache.compression = compression.parse()
+                .map_err(|e| format!("Invalid SQUIDDISH_COMPRESSION '{}': {}", compression, e))?;
         }
 
-        if let Ok(ttl) = std::env::var("SQUIDDISH_TTL") {
-            if let Some(parsed) = parse_duration(&ttl) {
-                config.cache.ttl_seconds = parsed;
-            }
+        if let Some(ttl) = get_var("SQUIDDISH_TTL") {
+            config.cache.ttl_seconds = parse_duration(&ttl)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_TTL '{}': expected number with optional unit (s, m, h, d)", ttl))?;
         }
 
         // APT config
-        if let Ok(enabled) = std::env::var("SQUIDDISH_APT_ENABLED") {
-            config.apt.enabled = enabled.parse().unwrap_or(true);
+        if let Some(enabled) = get_var("SQUIDDISH_APT_ENABLED") {
+            config.apt.enabled = enabled.parse()
+                .map_err(|e| format!("Invalid SQUIDDISH_APT_ENABLED '{}': {}", enabled, e))?;
         }
 
-        if let Ok(ttl) = std::env::var("SQUIDDISH_APT_LIST_TTL") {
-            if let Some(parsed) = parse_duration(&ttl) {
-                config.apt.list_ttl_seconds = parsed;
-            }
+        if let Some(ttl) = get_var("SQUIDDISH_APT_LIST_TTL") {
+            config.apt.list_ttl_seconds = parse_duration(&ttl)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_APT_LIST_TTL '{}': expected number with optional unit (s, m, h, d)", ttl))?;
         }
 
-        if let Ok(ttl) = std::env::var("SQUIDDISH_APT_PACKAGE_TTL") {
-            if let Some(parsed) = parse_duration(&ttl) {
-                config.apt.package_ttl_seconds = parsed;
-            }
+        if let Some(ttl) = get_var("SQUIDDISH_APT_PACKAGE_TTL") {
+            config.apt.package_ttl_seconds = parse_duration(&ttl)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_APT_PACKAGE_TTL '{}': expected number with optional unit (s, m, h, d)", ttl))?;
         }
 
-        if let Ok(ttl) = std::env::var("SQUIDDISH_APT_OTHER_TTL") {
-            if let Some(parsed) = parse_duration(&ttl) {
-                config.apt.other_ttl_seconds = parsed;
-            }
+        if let Some(ttl) = get_var("SQUIDDISH_APT_OTHER_TTL") {
+            config.apt.other_ttl_seconds = parse_duration(&ttl)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_APT_OTHER_TTL '{}': expected number with optional unit (s, m, h, d)", ttl))?;
         }
 
         // Security config
-        if let Ok(size) = std::env::var("SQUIDDISH_MAX_BODY_SIZE") {
-            if let Some(parsed) = parse_size(&size) {
-                config.security.max_body_size = parsed;
-            }
+        if let Some(size) = get_var("SQUIDDISH_MAX_BODY_SIZE") {
+            config.security.max_body_size = parse_size(&size)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_MAX_BODY_SIZE '{}': expected number with optional unit (KB, MB, GB, TB)", size))?;
         }
 
-        if let Ok(conns) = std::env::var("SQUIDDISH_MAX_CONNECTIONS") {
-            if let Ok(parsed) = conns.parse() {
-                config.security.max_connections = parsed;
-            }
+        if let Some(conns) = get_var("SQUIDDISH_MAX_CONNECTIONS") {
+            config.security.max_connections = conns.parse()
+                .map_err(|e| format!("Invalid SQUIDDISH_MAX_CONNECTIONS '{}': {}", conns, e))?;
         }
 
-        if let Ok(timeout) = std::env::var("SQUIDDISH_TIMEOUT") {
-            if let Some(parsed) = parse_duration(&timeout) {
-                config.security.timeout_seconds = parsed;
-            }
+        if let Some(timeout) = get_var("SQUIDDISH_TIMEOUT") {
+            config.security.timeout_seconds = parse_duration(&timeout)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_TIMEOUT '{}': expected number with optional unit (s, m, h, d)", timeout))?;
         }
 
-        if let Ok(strict) = std::env::var("SQUIDDISH_STRICT_HTTPS") {
-            config.security.strict_https = strict.parse().unwrap_or(true);
+        if let Some(strict) = get_var("SQUIDDISH_STRICT_HTTPS") {
+            config.security.strict_https = strict.parse()
+                .map_err(|e| format!("Invalid SQUIDDISH_STRICT_HTTPS '{}': {}", strict, e))?;
         }
 
-        if let Ok(hosts) = std::env::var("SQUIDDISH_ALLOWED_HOSTS") {
+        if let Some(hosts) = get_var("SQUIDDISH_ALLOWED_HOSTS") {
             config.security.allowed_hosts = hosts
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -321,7 +267,7 @@ impl Config {
                 .collect();
         }
 
-        if let Ok(hosts) = std::env::var("SQUIDDISH_BLOCKED_HOSTS") {
+        if let Some(hosts) = get_var("SQUIDDISH_BLOCKED_HOSTS") {
             config.security.blocked_hosts = hosts
                 .split(',')
                 .map(|s| s.trim().to_string())
@@ -329,7 +275,7 @@ impl Config {
                 .collect();
         }
 
-        config
+        Ok(config)
     }
 }
 
@@ -347,16 +293,47 @@ mod tests {
     }
 
     #[test]
-    fn test_env_var_config() {
-        std::env::set_var("SQUIDDISH_BIND_ADDR", "0.0.0.0:8080");
-        std::env::set_var("SQUIDDISH_MEMORY_SIZE", "2GB");
+    fn test_from_vars_valid() {
+        let config = Config::from_vars(|key| match key {
+            "SQUIDDISH_BIND_ADDR" => Some("0.0.0.0:8080".to_string()),
+            "SQUIDDISH_MEMORY_SIZE" => Some("2GB".to_string()),
+            "SQUIDDISH_STRICT_HTTPS" => Some("false".to_string()),
+            _ => None,
+        }).unwrap();
 
-        let config = Config::from_env();
         assert_eq!(config.bind_addr.port(), 8080);
         assert_eq!(config.cache.memory_size, 2 * 1024 * 1024 * 1024);
+        assert!(!config.security.strict_https);
+    }
 
-        std::env::remove_var("SQUIDDISH_BIND_ADDR");
-        std::env::remove_var("SQUIDDISH_MEMORY_SIZE");
+    #[test]
+    fn test_from_vars_invalid_bind_addr() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_BIND_ADDR" => Some("garbage".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("SQUIDDISH_BIND_ADDR"));
+    }
+
+    #[test]
+    fn test_from_vars_invalid_memory_size() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_MEMORY_SIZE" => Some("not_a_size".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("SQUIDDISH_MEMORY_SIZE"));
+    }
+
+    #[test]
+    fn test_from_vars_invalid_bool() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_APT_ENABLED" => Some("maybe".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("SQUIDDISH_APT_ENABLED"));
     }
 
     #[test]

@@ -7,3 +7,4 @@ pub mod apt;
 // Re-export commonly used items
 pub use config::Config;
 pub use error::{ProxyError, Result};
+pub use proxy::ProxyServer;

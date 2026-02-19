@@ -28,5 +28,3 @@ config.toml
 *~
 .DS_Store
 
-# Lock file (will be generated during build)
-Cargo.lock

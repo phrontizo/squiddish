@@ -3,7 +3,7 @@
 # Supports multi-arch: linux/amd64, linux/arm64
 # Uses native compilation on each platform (no cross-compilation)
 
-FROM rust:1.83-alpine AS builder
+FROM rust:1.85-alpine AS builder
 
 ARG TARGETPLATFORM
 
@@ -22,8 +22,8 @@ RUN case "$(uname -m)" in \
     export RUST_TARGET=$(cat /tmp/rust-target) && \
     rustup target add $RUST_TARGET
 
-# Copy manifests
-COPY Cargo.toml ./
+# Copy manifests and lock file for reproducible builds
+COPY Cargo.toml Cargo.lock ./
 
 # Create dummy src files to build dependencies (both lib.rs and main.rs needed)
 RUN export RUST_TARGET=$(cat /tmp/rust-target) && \

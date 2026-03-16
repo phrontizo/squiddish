@@ -62,19 +62,16 @@ fn is_dns_error(err: &(dyn std::error::Error + 'static)) -> bool {
         if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
             // ConnectionRefused/ConnectionReset are NOT DNS errors
             // NotFound and "other" errors from getaddrinfo indicate DNS failure
-            match io_err.kind() {
-                std::io::ErrorKind::Other => {
-                    // getaddrinfo failures surface as "Other" io errors
-                    let msg = io_err.to_string();
-                    if msg.contains("dns") || msg.contains("resolve")
-                        || msg.contains("Name or service not known")
-                        || msg.contains("nodename nor servname provided")
-                        || msg.contains("No address associated with hostname")
-                    {
-                        return true;
-                    }
+            if io_err.kind() == std::io::ErrorKind::Other {
+                // getaddrinfo failures surface as "Other" io errors
+                let msg = io_err.to_string();
+                if msg.contains("dns") || msg.contains("resolve")
+                    || msg.contains("Name or service not known")
+                    || msg.contains("nodename nor servname provided")
+                    || msg.contains("No address associated with hostname")
+                {
+                    return true;
                 }
-                _ => {}
             }
         }
         source = err.source();

@@ -338,7 +338,9 @@ impl ProxyHandler {
         let response = fetch_with_timeout(&client, new_req, timeout_secs).await?;
 
         let status = response.status();
-        let response_headers = response.headers().clone();
+        // Filter hop-by-hop headers before storing — prevents replaying
+        // Transfer-Encoding, Connection, etc. from cache to clients.
+        let response_headers = filter_headers(response.headers().clone());
 
         // Convert headers once — reused for both response metadata and caching
         let headers_vec: Vec<(String, String)> = response_headers
@@ -660,6 +662,24 @@ fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool
         }
     }
 
+    // Do not cache responses that Vary on sensitive headers.
+    // The cache key only includes Accept-Encoding; if the upstream varies on
+    // Authorization, Cookie, or *, caching would serve one user's response
+    // to another (cache poisoning / data leak).
+    if let Some(vary) = headers.get("vary") {
+        if let Ok(value) = vary.to_str() {
+            for field in value.split(',') {
+                let field = field.trim();
+                if field == "*"
+                    || field.eq_ignore_ascii_case("authorization")
+                    || field.eq_ignore_ascii_case("cookie")
+                {
+                    return false;
+                }
+            }
+        }
+    }
+
     true
 }
 
@@ -862,8 +882,38 @@ mod tests {
         assert!(!should_cache_response(StatusCode::OK, &headers));
 
         // Other Pragma values should not prevent caching
+        headers.remove("pragma");
         headers.insert("pragma", "something-else".parse().unwrap());
         assert!(should_cache_response(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_should_not_cache_vary_authorization() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // Vary: Accept-Encoding is fine (included in cache key)
+        headers.insert("vary", "Accept-Encoding".parse().unwrap());
+        assert!(should_cache_response(StatusCode::OK, &headers));
+
+        // Vary: Authorization must prevent caching (not in cache key)
+        headers.insert("vary", "Authorization".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // Vary: Cookie must prevent caching
+        headers.insert("vary", "Cookie".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // Vary: * must prevent caching
+        headers.insert("vary", "*".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // Vary with mixed headers including Authorization
+        headers.insert("vary", "Accept-Encoding, Authorization".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // Case insensitive
+        headers.insert("vary", "authorization".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
     }
 
     #[test]

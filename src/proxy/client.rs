@@ -42,16 +42,44 @@ pub async fn fetch_with_timeout(
             ))
         })?
         .map_err(|e| {
-            // Check if it's a DNS error
-            let error_msg = e.to_string();
-            if error_msg.contains("dns") || error_msg.contains("resolve") || error_msg.contains("Name or service not known") {
-                tracing::error!("DNS lookup failed for {}: {}", host, error_msg);
+            // Inspect error chain for DNS/connection-refused errors
+            if is_dns_error(&e) {
+                tracing::error!("DNS lookup failed for {}: {}", host, e);
                 ProxyError::DnsError(format!("Failed to resolve hostname: {}", host))
             } else {
-                tracing::error!("Connection failed to {}: {}", host, error_msg);
-                ProxyError::HyperUtil(error_msg)
+                tracing::error!("Connection failed to {}: {}", host, e);
+                ProxyError::HyperUtil(e.to_string())
             }
         })
+}
+
+/// Inspect the error chain for DNS resolution failures.
+/// Walks the source chain looking for io::Error with specific error kinds,
+/// rather than relying on fragile string matching against error messages.
+fn is_dns_error(err: &(dyn std::error::Error + 'static)) -> bool {
+    let mut source = Some(err);
+    while let Some(err) = source {
+        if let Some(io_err) = err.downcast_ref::<std::io::Error>() {
+            // ConnectionRefused/ConnectionReset are NOT DNS errors
+            // NotFound and "other" errors from getaddrinfo indicate DNS failure
+            match io_err.kind() {
+                std::io::ErrorKind::Other => {
+                    // getaddrinfo failures surface as "Other" io errors
+                    let msg = io_err.to_string();
+                    if msg.contains("dns") || msg.contains("resolve")
+                        || msg.contains("Name or service not known")
+                        || msg.contains("nodename nor servname provided")
+                        || msg.contains("No address associated with hostname")
+                    {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        source = err.source();
+    }
+    false
 }
 
 pub async fn collect_body(body: Incoming, max_size: u64) -> Result<Bytes> {

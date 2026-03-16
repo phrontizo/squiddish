@@ -37,11 +37,3 @@ pub async fn handle_connect_tunnel(
     Ok(())
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn test_tunnel_module() {
-        // Module compiles and loads
-        assert!(true);
-    }
-}

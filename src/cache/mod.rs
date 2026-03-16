@@ -6,7 +6,7 @@ mod inflight;
 pub use memory::MemoryCache;
 pub use disk::DiskCache;
 pub use key::CacheKey;
-pub use inflight::{InflightDownloads, DownloadChunk};
+pub use inflight::{InflightDownloads, DownloadAction, DownloadChunk, ResponseMeta, ResponseMetaResult};
 
 use bytes::Bytes;
 use std::time::SystemTime;
@@ -129,6 +129,8 @@ mod tests {
     #[test]
     fn test_cache_entry_size() {
         let entry = create_test_entry();
-        assert!(entry.size() > 0);
+        // "test data" = 9 bytes data + "content-type"(12) + "text/plain"(10) = 22 header bytes + 10 overhead = 41
+        let expected = 9 + 12 + 10 + 10;
+        assert_eq!(entry.size(), expected);
     }
 }

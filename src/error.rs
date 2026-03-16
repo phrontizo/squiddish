@@ -20,10 +20,6 @@ pub enum ProxyError {
     #[error("Cache error: {0}")]
     Cache(String),
 
-    #[error("Configuration error: {0}")]
-    #[allow(dead_code)]
-    Config(String),
-
     #[error("Tunnel error: {0}")]
     Tunnel(String),
 

@@ -90,9 +90,10 @@ mod tests {
         let entry = create_entry(2048);
 
         cache.put(key.clone(), entry).await;
-        // moka may accept and immediately evict
+        // moka accepts then evicts oversized entries asynchronously
         cache.cache.run_pending_tasks().await;
-        // Entry might be evicted due to exceeding capacity
+        // Entry should not remain in cache since it exceeds capacity
+        assert!(cache.get(&key).await.is_none(), "Oversized entry should be evicted");
     }
 
     #[tokio::test]

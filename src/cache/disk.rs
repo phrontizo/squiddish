@@ -8,7 +8,10 @@ use std::time::SystemTime;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// On-disk cache entry metadata. Uses `#[serde(default)]` so that new fields
+/// added in future versions won't break deserialization of existing cache files.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 struct DiskCacheMetadata {
     headers: Vec<(String, String)>,
     status: u16,
@@ -17,12 +20,27 @@ struct DiskCacheMetadata {
     data_size: usize,
 }
 
+impl Default for DiskCacheMetadata {
+    fn default() -> Self {
+        Self {
+            headers: Vec::new(),
+            status: 200,
+            timestamp: SystemTime::UNIX_EPOCH,
+            ttl_seconds: 0,
+            data_size: 0,
+        }
+    }
+}
+
 pub struct DiskCache {
     cache_dir: PathBuf,
     max_size: u64,
     current_size: RwLock<u64>,
     /// Eviction order: (hash_hex, entry_size) — oldest entries at the front
     eviction_order: RwLock<VecDeque<(String, u64)>>,
+    /// Serializes write operations (evict + put) to prevent TOCTOU races
+    /// where concurrent puts both read the same current_size and over-evict.
+    write_mutex: tokio::sync::Mutex<()>,
 }
 
 impl DiskCache {
@@ -34,6 +52,7 @@ impl DiskCache {
             max_size,
             current_size: RwLock::new(0),
             eviction_order: RwLock::new(VecDeque::new()),
+            write_mutex: tokio::sync::Mutex::new(()),
         };
 
         cache.rebuild_index().await?;
@@ -244,6 +263,9 @@ impl DiskCache {
     }
 
     pub async fn put(&self, key: CacheKey, entry: CacheEntry) -> Result<()> {
+        // Serialize writes to prevent TOCTOU races in evict_if_needed
+        let _guard = self.write_mutex.lock().await;
+
         let entry_size = entry.size() as u64;
 
         // Evict if needed
@@ -251,6 +273,12 @@ impl DiskCache {
 
         // Remove old entry if exists
         let old_size = self.remove_entry(&key).await.unwrap_or(0);
+        let key_hex = key.hash_hex();
+
+        // Remove any stale ghost entries from eviction order before adding the new one
+        if old_size > 0 {
+            self.eviction_order.write().retain(|(h, _)| *h != key_hex);
+        }
 
         // Write the new entry
         let new_size = self.write_entry(&key, &entry).await?;
@@ -260,7 +288,7 @@ impl DiskCache {
         *current_size = current_size.saturating_sub(old_size) + new_size;
 
         // Track in eviction order
-        self.eviction_order.write().push_back((key.hash_hex(), new_size));
+        self.eviction_order.write().push_back((key_hex, new_size));
 
         tracing::debug!("Cached entry on disk: {} bytes, total: {}/{}",
                        new_size, *current_size, self.max_size);
@@ -270,12 +298,13 @@ impl DiskCache {
 
     pub async fn remove(&self, key: &CacheKey) -> Result<()> {
         let removed_size = self.remove_entry(key).await.unwrap_or(0);
+        let key_hex = key.hash_hex();
 
         let mut current_size = self.current_size.write();
         *current_size = current_size.saturating_sub(removed_size);
 
-        // Note: we don't remove from eviction_order (O(n) search).
-        // Stale entries are skipped during eviction if files don't exist.
+        // Remove from eviction order to prevent ghost entries causing over-eviction
+        self.eviction_order.write().retain(|(h, _)| *h != key_hex);
 
         Ok(())
     }
@@ -354,5 +383,89 @@ mod tests {
 
         // Verify eviction order was rebuilt
         assert!(!cache.eviction_order.read().is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_disk_cache_overwrite_no_ghost_in_eviction() {
+        // Regression: overwriting a key used to leave a ghost entry in eviction_order.
+        // When eviction popped the ghost, it deleted the live entry's files.
+        let temp_dir = TempDir::new().unwrap();
+        // Small cache: 10KB
+        let cache = DiskCache::new(temp_dir.path().to_path_buf(), 10 * 1024)
+            .await
+            .unwrap();
+
+        let key = CacheKey::new("GET", "http://example.com/overwrite", &[]);
+
+        // Write entry, then overwrite with different data
+        cache.put(key.clone(), create_entry(1024)).await.unwrap();
+        cache.put(key.clone(), create_entry(2048)).await.unwrap();
+
+        // Eviction order should have exactly 1 entry for this key, not 2
+        let order = cache.eviction_order.read();
+        let count = order.iter().filter(|(h, _)| *h == key.hash_hex()).count();
+        assert_eq!(count, 1, "Expected 1 eviction entry, got {} (ghost entry present)", count);
+        drop(order);
+
+        // The entry should still be retrievable
+        let retrieved = cache.get(&key).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().data.len(), 2048);
+    }
+
+    #[tokio::test]
+    async fn test_disk_cache_overwrite_survives_eviction() {
+        // After overwriting a key, filling the cache should evict other entries
+        // but NOT the overwritten entry's live files.
+        let temp_dir = TempDir::new().unwrap();
+        // 8KB cache — tight so we trigger eviction
+        let cache = DiskCache::new(temp_dir.path().to_path_buf(), 8 * 1024)
+            .await
+            .unwrap();
+
+        let key_a = CacheKey::new("GET", "http://example.com/a", &[]);
+        let key_b = CacheKey::new("GET", "http://example.com/b", &[]);
+
+        // Write A (1KB), then overwrite A (1KB again)
+        cache.put(key_a.clone(), create_entry(1024)).await.unwrap();
+        cache.put(key_a.clone(), create_entry(1024)).await.unwrap();
+
+        // Write B large enough to trigger eviction
+        cache.put(key_b.clone(), create_entry(6 * 1024)).await.unwrap();
+
+        // A should still be retrievable (eviction should not have destroyed it via ghost)
+        let retrieved_a = cache.get(&key_a).await.unwrap();
+        assert!(retrieved_a.is_some(), "Overwritten entry A was destroyed by eviction via ghost entry");
+    }
+
+    #[test]
+    fn test_disk_cache_metadata_serde_forward_compat() {
+        // Simulate a metadata JSON from a future version with an unknown field
+        let json_with_extra = r#"{
+            "headers": [["content-type", "text/plain"]],
+            "status": 200,
+            "timestamp": {"secs_since_epoch": 1700000000, "nanos_since_epoch": 0},
+            "ttl_seconds": 3600,
+            "data_size": 1024,
+            "new_future_field": "should be ignored"
+        }"#;
+        let meta: DiskCacheMetadata = serde_json::from_str(json_with_extra).unwrap();
+        assert_eq!(meta.status, 200);
+        assert_eq!(meta.data_size, 1024);
+    }
+
+    #[test]
+    fn test_disk_cache_metadata_serde_missing_field() {
+        // Simulate a metadata JSON missing a field (e.g., old version without ttl_seconds)
+        let json_missing_field = r#"{
+            "headers": [],
+            "status": 200,
+            "timestamp": {"secs_since_epoch": 1700000000, "nanos_since_epoch": 0},
+            "data_size": 512
+        }"#;
+        let meta: DiskCacheMetadata = serde_json::from_str(json_missing_field).unwrap();
+        assert_eq!(meta.status, 200);
+        assert_eq!(meta.ttl_seconds, 0); // default
+        assert_eq!(meta.data_size, 512);
     }
 }

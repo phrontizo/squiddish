@@ -6,6 +6,7 @@ mod streaming;
 use crate::cache::TieredCache;
 use crate::config::Config;
 use crate::error::Result;
+use client::create_client;
 use handler::ProxyHandler;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
@@ -46,6 +47,8 @@ impl ProxyServer {
 
         let config = Arc::new(self.config.clone());
         let semaphore = Arc::new(Semaphore::new(config.security.max_connections));
+        // Create a single HTTP client shared across all connections for proper connection pooling
+        let shared_client = create_client();
 
         let shutdown = async {
             let _ = tokio::signal::ctrl_c().await;
@@ -77,12 +80,13 @@ impl ProxyServer {
 
                     let cache = self.cache.clone();
                     let config = config.clone();
+                    let client = shared_client.clone();
 
                     tokio::spawn(async move {
                         let _permit = permit; // held until task completes
 
                         let io = TokioIo::new(stream);
-                        let handler = ProxyHandler::new(cache, config, peer_addr);
+                        let handler = ProxyHandler::new(cache, config, client, peer_addr);
 
                         let service = service_fn(move |req| {
                             let handler = handler.clone();

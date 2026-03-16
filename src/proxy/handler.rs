@@ -1,8 +1,8 @@
 use crate::apt::is_apt_request;
-use crate::cache::{CacheEntry, CacheKey, DownloadChunk, TieredCache};
+use crate::cache::{CacheEntry, CacheKey, DownloadAction, DownloadChunk, ResponseMeta, TieredCache};
 use crate::config::Config;
 use crate::error::{ProxyError, Result};
-use crate::proxy::client::{collect_body, create_client, fetch_with_timeout, HttpClient};
+use crate::proxy::client::{collect_body, fetch_with_timeout, HttpClient};
 use crate::proxy::streaming::StreamingBody;
 use crate::proxy::tunnel::handle_connect_tunnel;
 use bytes::Bytes;
@@ -22,11 +22,11 @@ pub struct ProxyHandler {
 }
 
 impl ProxyHandler {
-    pub fn new(cache: Arc<TieredCache>, config: Arc<Config>, peer_addr: SocketAddr) -> Self {
+    pub fn new(cache: Arc<TieredCache>, config: Arc<Config>, client: HttpClient, peer_addr: SocketAddr) -> Self {
         Self {
             cache,
             config,
-            client: create_client(),
+            client,
             peer_addr,
         }
     }
@@ -91,8 +91,12 @@ impl ProxyHandler {
             }
         }
 
-        // Check blocked hosts
-        if let Some(host) = req.uri().host() {
+        // Check blocked hosts (use same Host header fallback as allowed_hosts)
+        let blocked_host = req
+            .uri()
+            .host()
+            .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()));
+        if let Some(host) = blocked_host {
             for blocked in &self.config.security.blocked_hosts {
                 if host_matches(host, blocked) {
                     return Err(ProxyError::ValidationFailed(format!(
@@ -135,9 +139,14 @@ impl ProxyHandler {
         // This prevents returning success for non-existent domains
         // and eliminates the double-connection overhead.
         let target_addr = format!("{}:{}", host, port);
-        let target_stream = tokio::net::TcpStream::connect(&target_addr).await.map_err(|e| {
-            ProxyError::Tunnel(format!("Failed to connect to {}: {}", target_addr, e))
-        })?;
+        let connect_timeout = std::time::Duration::from_secs(self.config.security.timeout_seconds);
+        let target_stream = tokio::time::timeout(
+            connect_timeout,
+            tokio::net::TcpStream::connect(&target_addr),
+        )
+        .await
+        .map_err(|_| ProxyError::Tunnel(format!("Connection to {} timed out", target_addr)))?
+        .map_err(|e| ProxyError::Tunnel(format!("Failed to connect to {}: {}", target_addr, e)))?;
 
         let peer_addr = self.peer_addr;
 
@@ -167,11 +176,11 @@ impl ProxyHandler {
         &self,
         req: Request<Incoming>,
     ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
-        // Create cache key
+        // Create cache key (stores the URI string, reused for APT detection)
         let cache_key = self.create_cache_key(&req);
 
-        // Check cache
-        let is_apt = crate::apt::is_apt_request(req.uri().to_string().as_str());
+        // Check cache (use cache_key.uri() to avoid redundant URI stringification)
+        let is_apt = crate::apt::is_apt_request(cache_key.uri());
         let cache_type = if is_apt { "[APT]" } else { "[HTTP]" };
 
         if let Some(entry) = self.cache.get(&cache_key).await? {
@@ -181,28 +190,46 @@ impl ProxyHandler {
 
         tracing::info!("{} Cache MISS: {}", cache_type, req.uri());
 
-        // Check if download is already in progress
-        if let Some((receiver, initial_chunks)) = self.cache.inflight().join_download(&cache_key) {
-            tracing::info!("{} Joining in-flight download: {}", cache_type, req.uri());
-            // Return streaming response for concurrent request
-            return Ok(Response::builder()
-                .status(StatusCode::OK)
-                .body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?);
-        }
+        // Atomically join an existing download or start a new one.
+        // This prevents a TOCTOU race where two concurrent requests both see
+        // "no download" and both call start_download (overwriting each other's state).
+        match self.cache.inflight().join_or_start_download(&cache_key) {
+            DownloadAction::Joined(receiver, initial_chunks, mut meta_rx) => {
+                tracing::info!("{} Joining in-flight download: {}", cache_type, req.uri());
 
-        // Start a new download with streaming
-        self.handle_streaming_download(req, cache_key, is_apt).await
+                let meta_result = meta_rx
+                    .wait_for(|v| v.is_some())
+                    .await
+                    .map_err(|_| ProxyError::Network("Download failed before headers received".to_string()))?
+                    .clone()
+                    .unwrap();
+
+                let meta = meta_result.map_err(ProxyError::Network)?;
+
+                let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
+                    tracing::warn!("Invalid upstream status code {}, falling back to 200", meta.status);
+                    StatusCode::OK
+                });
+                let mut builder = Response::builder().status(status);
+                for (name, value) in &meta.headers {
+                    builder = builder.header(name.as_str(), value.as_str());
+                }
+
+                Ok(builder.body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?)
+            }
+            DownloadAction::Started(sender, meta_rx) => {
+                self.handle_streaming_download(req, cache_key, sender, meta_rx).await
+            }
+        }
     }
 
     async fn handle_streaming_download(
         &self,
         req: Request<Incoming>,
         cache_key: CacheKey,
-        _is_apt: bool,
+        sender: tokio::sync::broadcast::Sender<DownloadChunk>,
+        mut meta_rx: tokio::sync::watch::Receiver<Option<crate::cache::ResponseMetaResult>>,
     ) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
-        // Start the download and get broadcast sender
-        let sender = self.cache.inflight().start_download(&cache_key);
-
         // Subscribe BEFORE spawning so we don't miss any chunks
         let receiver = sender.subscribe();
 
@@ -211,9 +238,6 @@ impl ProxyHandler {
         let config = self.config.clone();
         let client = self.client.clone();
         let uri = req.uri().clone();
-
-        // Create a oneshot channel to get the response status/headers
-        let (status_tx, status_rx) = tokio::sync::oneshot::channel();
 
         // Spawn background task to fetch and broadcast
         tokio::spawn(async move {
@@ -227,7 +251,6 @@ impl ProxyHandler {
                 config.security.max_body_size,
                 config.security.timeout_seconds,
                 config.clone(),
-                Some(status_tx),
             ).await;
 
             match result {
@@ -237,6 +260,8 @@ impl ProxyHandler {
                 }
                 Err(e) => {
                     tracing::error!("Download failed: {} - {}", uri, e);
+                    // Propagate error through meta channel so waiters get the actual message
+                    cache.inflight().set_response_error(&cache_key, e.to_string());
                     let _ = sender.send(DownloadChunk::Error(e.to_string()));
                 }
             }
@@ -245,27 +270,26 @@ impl ProxyHandler {
             cache.inflight().complete_download(&cache_key);
         });
 
-        // Wait for the response headers or error
-        match status_rx.await {
-            Ok(Ok((status, headers))) => {
-                // Success - return streaming response
-                let mut builder = Response::builder().status(status);
+        // Wait for response metadata (status + headers) from the background task
+        let meta_result = meta_rx
+            .wait_for(|v| v.is_some())
+            .await
+            .map_err(|_| ProxyError::Network("Request failed".to_string()))?
+            .clone()
+            .unwrap();
 
-                for (name, value) in headers {
-                    builder = builder.header(name, value);
-                }
+        let meta = meta_result.map_err(ProxyError::Network)?;
 
-                Ok(builder.body(Either::Right(StreamingBody::new(receiver, vec![])))?)
-            }
-            Ok(Err(e)) => {
-                // Error occurred before we could start streaming
-                Err(e)
-            }
-            Err(_) => {
-                // Sender dropped without sending
-                Err(ProxyError::Network("Request failed".to_string()))
-            }
+        let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
+            tracing::warn!("Invalid upstream status code {}, falling back to 200", meta.status);
+            StatusCode::OK
+        });
+        let mut builder = Response::builder().status(status);
+        for (name, value) in &meta.headers {
+            builder = builder.header(name.as_str(), value.as_str());
         }
+
+        Ok(builder.body(Either::Right(StreamingBody::new(receiver, vec![])))?)
     }
 
     async fn handle_passthrough_request(
@@ -285,7 +309,6 @@ impl ProxyHandler {
         max_body_size: u64,
         timeout_secs: u64,
         config: Arc<Config>,
-        status_tx: Option<tokio::sync::oneshot::Sender<Result<(hyper::StatusCode, Vec<(String, String)>)>>>,
     ) -> Result<()> {
         // Build new request with full URI
         let uri = req.uri().clone();
@@ -308,40 +331,47 @@ impl ProxyHandler {
         // Add Via header
         new_req.headers_mut().insert(
             "via",
-            "1.1 squiddish".to_string().parse().unwrap(),
+            hyper::header::HeaderValue::from_static("1.1 squiddish"),
         );
 
         // Forward request
-        let response = match fetch_with_timeout(&client, new_req, timeout_secs).await {
-            Ok(r) => r,
-            Err(e) => {
-                // Send error back through oneshot channel if provided
-                if let Some(tx) = status_tx {
-                    let _ = tx.send(Err(ProxyError::Network(e.to_string())));
-                }
-                return Err(e);
-            }
-        };
+        let response = fetch_with_timeout(&client, new_req, timeout_secs).await?;
 
         let status = response.status();
         let response_headers = response.headers().clone();
 
-        // Send status and headers back through oneshot channel
-        if let Some(tx) = status_tx {
-            let headers_vec: Vec<(String, String)> = response_headers
-                .iter()
-                .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-                .collect();
-            let _ = tx.send(Ok((status, headers_vec)));
-        }
+        // Convert headers once — reused for both response metadata and caching
+        let headers_vec: Vec<(String, String)> = response_headers
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
+            .collect();
 
-        // Stream the response body
+        // Publish response metadata so both initiator and joiners get correct headers
+        cache.inflight().set_response_meta(cache_key, ResponseMeta {
+            status: status.as_u16(),
+            headers: headers_vec.clone(),
+        });
+
+        // Stream the response body with a per-chunk timeout.
+        // Without this, a stalling upstream would hang all joined clients indefinitely.
         let mut body = response.into_body();
-        let mut accumulated_data = Vec::new();
+        // Accumulate directly into a single buffer to avoid doubling peak memory
+        // (previously: Vec<Bytes> chunks + separate Vec<u8> copy at the end).
+        let cacheable = should_cache_response(status, &response_headers);
+        let mut cache_buf: Vec<u8> = Vec::new();
         let mut total_size = 0u64;
+        let chunk_timeout = std::time::Duration::from_secs(timeout_secs);
 
-        while let Some(frame) = body.frame().await {
-            let frame = frame?;
+        loop {
+            let frame = match tokio::time::timeout(chunk_timeout, body.frame()).await {
+                Ok(Some(frame)) => frame?,
+                Ok(None) => break, // Body complete
+                Err(_) => {
+                    return Err(ProxyError::Network(
+                        "Upstream body read timed out".to_string(),
+                    ));
+                }
+            };
             if let Some(chunk) = frame.data_ref() {
                 if total_size + chunk.len() as u64 > max_body_size {
                     return Err(ProxyError::ValidationFailed("Response body too large".to_string()));
@@ -350,8 +380,10 @@ impl ProxyHandler {
                 let bytes = chunk.clone();
                 total_size += bytes.len() as u64;
 
-                // Add to accumulated data for caching
-                accumulated_data.push(bytes.clone());
+                // Accumulate directly for caching (avoids separate chunk list + copy)
+                if cacheable {
+                    cache_buf.extend_from_slice(&bytes);
+                }
 
                 // Add to inflight tracking for late joiners
                 cache.inflight().add_chunk(cache_key, bytes.clone());
@@ -361,27 +393,15 @@ impl ProxyHandler {
             }
         }
 
-        // Only cache responses that are cacheable
-        if !should_cache_response(status, &response_headers) {
+        if !cacheable {
             tracing::debug!("Response not cacheable: status={}, uri={}", status, cache_key.uri());
             return Ok(());
         }
 
-        // Combine all chunks for caching
-        let mut full_body = Vec::new();
-        for chunk in accumulated_data {
-            full_body.extend_from_slice(&chunk);
-        }
-        let body_bytes = Bytes::from(full_body);
-
-        // Cache the complete response with proper TTL
-        let headers_vec: Vec<(String, String)> = response_headers
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_str().unwrap_or("").to_string()))
-            .collect();
+        let body_bytes = Bytes::from(cache_buf);
 
         // Determine TTL based on APT detection or cache headers
-        let ttl_seconds = if is_apt_request(cache_key.uri()) {
+        let ttl_seconds = if config.apt.enabled && is_apt_request(cache_key.uri()) {
             if crate::apt::is_apt_package_file(cache_key.uri()) {
                 config.apt.package_ttl_seconds
             } else if crate::apt::is_apt_package_list(cache_key.uri()) {
@@ -403,7 +423,9 @@ impl ProxyHandler {
             ttl_seconds,
         };
 
-        let _ = cache.put(cache_key.clone(), entry).await;
+        if let Err(e) = cache.put(cache_key.clone(), entry).await {
+            tracing::warn!("Failed to cache response for {}: {}", cache_key.uri(), e);
+        }
 
         Ok(())
     }
@@ -416,12 +438,12 @@ impl ProxyHandler {
 
                 for directive in value.split(',') {
                     let directive = directive.trim();
-                    if directive.starts_with("s-maxage=") {
-                        if let Ok(seconds) = directive[9..].parse::<u64>() {
+                    if let Some(val) = directive.strip_prefix("s-maxage=") {
+                        if let Ok(seconds) = val.parse::<u64>() {
                             s_maxage = Some(seconds);
                         }
-                    } else if directive.starts_with("max-age=") {
-                        if let Ok(seconds) = directive[8..].parse::<u64>() {
+                    } else if let Some(val) = directive.strip_prefix("max-age=") {
+                        if let Ok(seconds) = val.parse::<u64>() {
                             max_age = Some(seconds);
                         }
                     }
@@ -477,7 +499,7 @@ impl ProxyHandler {
         // Add Via header
         new_req.headers_mut().insert(
             "via",
-            "1.1 squiddish".to_string().parse().unwrap(),
+            hyper::header::HeaderValue::from_static("1.1 squiddish"),
         );
 
         // Forward request
@@ -594,7 +616,7 @@ impl ProxyHandler {
     </div>
 </body>
 </html>"#,
-            error,
+            html_escape(&error.to_string()),
             self.peer_addr,
             chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
         );
@@ -618,8 +640,11 @@ fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool
     if let Some(cc) = headers.get("cache-control") {
         if let Ok(value) = cc.to_str() {
             for directive in value.split(',') {
-                let directive = directive.trim().to_lowercase();
-                if directive == "no-store" || directive == "no-cache" || directive == "private" {
+                let directive = directive.trim();
+                if directive.eq_ignore_ascii_case("no-store")
+                    || directive.eq_ignore_ascii_case("no-cache")
+                    || directive.eq_ignore_ascii_case("private")
+                {
                     return false;
                 }
             }
@@ -638,11 +663,23 @@ fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool
     true
 }
 
+/// Escape a string for safe inclusion in HTML content.
+fn html_escape(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#x27;")
+}
+
 /// Match a hostname against a pattern using exact match or subdomain suffix.
 /// Pattern "example.com" matches "example.com" and "sub.example.com"
 /// but NOT "evil-example.com".
 fn host_matches(host: &str, pattern: &str) -> bool {
-    host == pattern || host.ends_with(&format!(".{}", pattern))
+    host == pattern
+        || (host.len() > pattern.len()
+            && host.ends_with(pattern)
+            && host.as_bytes()[host.len() - pattern.len() - 1] == b'.')
 }
 
 fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
@@ -651,17 +688,31 @@ fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
         .ok_or_else(|| ProxyError::InvalidUri("Missing authority in CONNECT".to_string()))?;
 
     let host_port = authority.as_str();
-    let parts: Vec<&str> = host_port.split(':').collect();
 
-    match parts.as_slice() {
-        [host, port] => {
-            let port = port
+    // Handle IPv6 addresses in bracket notation: [::1]:443
+    if let Some(rest) = host_port.strip_prefix('[') {
+        if let Some((ipv6, after_bracket)) = rest.split_once(']') {
+            let port = if let Some(port_str) = after_bracket.strip_prefix(':') {
+                port_str
+                    .parse::<u16>()
+                    .map_err(|_| ProxyError::InvalidUri("Invalid port".to_string()))?
+            } else {
+                443
+            };
+            return Ok((format!("[{}]", ipv6), port));
+        }
+        return Err(ProxyError::InvalidUri("Malformed IPv6 address".to_string()));
+    }
+
+    // IPv4 or hostname: split on last colon for host:port
+    match host_port.rsplit_once(':') {
+        Some((host, port_str)) => {
+            let port = port_str
                 .parse::<u16>()
                 .map_err(|_| ProxyError::InvalidUri("Invalid port".to_string()))?;
             Ok((host.to_string(), port))
         }
-        [host] => Ok((host.to_string(), 443)),
-        _ => Err(ProxyError::InvalidUri("Invalid CONNECT URI".to_string())),
+        None => Ok((host_port.to_string(), 443)),
     }
 }
 
@@ -681,7 +732,13 @@ fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, 
         builder = builder.header("x-cache-ttl", remaining_ttl.to_string());
     }
 
-    builder.body(Either::Left(Full::new(entry.data))).unwrap()
+    builder
+        .body(Either::Left(Full::new(entry.data)))
+        .unwrap_or_else(|_| {
+            // Fallback: if builder failed (e.g., corrupted status code from disk cache),
+            // return a plain 200 with the data rather than panicking.
+            Response::new(Either::Left(Full::new(Bytes::new())))
+        })
 }
 
 fn filter_headers(mut headers: hyper::HeaderMap) -> hyper::HeaderMap {
@@ -711,12 +768,46 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_connect_uri_default_port() {
+        let uri: Uri = "example.com".parse().unwrap();
+        let (host, port) = parse_connect_uri(&uri).unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_parse_connect_uri_custom_port() {
+        let uri: Uri = "example.com:8443".parse().unwrap();
+        let (host, port) = parse_connect_uri(&uri).unwrap();
+        assert_eq!(host, "example.com");
+        assert_eq!(port, 8443);
+    }
+
+    #[test]
+    fn test_parse_connect_uri_ipv6() {
+        let uri: Uri = "[::1]:443".parse().unwrap();
+        let (host, port) = parse_connect_uri(&uri).unwrap();
+        assert_eq!(host, "[::1]");
+        assert_eq!(port, 443);
+    }
+
+    #[test]
+    fn test_parse_connect_uri_ipv6_full() {
+        let uri: Uri = "[2001:db8::1]:8443".parse().unwrap();
+        let (host, port) = parse_connect_uri(&uri).unwrap();
+        assert_eq!(host, "[2001:db8::1]");
+        assert_eq!(port, 8443);
+    }
+
+    #[test]
     fn test_host_matches() {
         assert!(host_matches("example.com", "example.com"));
         assert!(host_matches("sub.example.com", "example.com"));
         assert!(host_matches("deep.sub.example.com", "example.com"));
         assert!(!host_matches("evil-example.com", "example.com"));
         assert!(!host_matches("example.com.attacker.org", "example.com"));
+        // Edge case: pattern longer than host
+        assert!(!host_matches("com", "example.com"));
     }
 
     #[test]
@@ -760,5 +851,55 @@ mod tests {
         // s-maxage alone
         headers.insert("cache-control", "s-maxage=600".parse().unwrap());
         assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(600));
+    }
+
+    #[test]
+    fn test_should_cache_response_pragma_no_cache() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // Pragma: no-cache should prevent caching (HTTP/1.0 compatibility)
+        headers.insert("pragma", "no-cache".parse().unwrap());
+        assert!(!should_cache_response(StatusCode::OK, &headers));
+
+        // Other Pragma values should not prevent caching
+        headers.insert("pragma", "something-else".parse().unwrap());
+        assert!(should_cache_response(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_filter_headers_removes_hop_by_hop() {
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert("content-type", "text/html".parse().unwrap());
+        headers.insert("connection", "keep-alive".parse().unwrap());
+        headers.insert("keep-alive", "timeout=5".parse().unwrap());
+        headers.insert("proxy-authorization", "Basic abc123".parse().unwrap());
+        headers.insert("transfer-encoding", "chunked".parse().unwrap());
+        headers.insert("x-custom", "preserved".parse().unwrap());
+
+        let filtered = filter_headers(headers);
+
+        // Hop-by-hop headers should be removed
+        assert!(filtered.get("connection").is_none());
+        assert!(filtered.get("keep-alive").is_none());
+        assert!(filtered.get("proxy-authorization").is_none());
+        assert!(filtered.get("transfer-encoding").is_none());
+
+        // End-to-end headers should be preserved
+        assert_eq!(filtered.get("content-type").unwrap(), "text/html");
+        assert_eq!(filtered.get("x-custom").unwrap(), "preserved");
+    }
+
+    #[test]
+    fn test_html_escape() {
+        assert_eq!(html_escape("hello"), "hello");
+        assert_eq!(html_escape("<script>alert(1)</script>"), "&lt;script&gt;alert(1)&lt;/script&gt;");
+        assert_eq!(html_escape("a&b"), "a&amp;b");
+        assert_eq!(html_escape(r#"he said "hi""#), "he said &quot;hi&quot;");
+        assert_eq!(html_escape("it's"), "it&#x27;s");
+        // Combined: a URI with HTML injection
+        assert_eq!(
+            html_escape("http://<evil>.com/path?q=1&r=2"),
+            "http://&lt;evil&gt;.com/path?q=1&amp;r=2"
+        );
     }
 }

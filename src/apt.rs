@@ -1,4 +1,4 @@
-/// APT-specific optimizations and cache handling
+//! APT-specific optimizations and cache handling
 
 /// Detect if a request is an APT package manager request
 pub fn is_apt_request(uri: &str) -> bool {

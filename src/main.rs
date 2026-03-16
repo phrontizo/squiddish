@@ -10,7 +10,10 @@ use proxy::ProxyServer;
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 async fn get_external_ip() -> Result<String> {
-    let response = reqwest::get("https://api.ipify.org").await?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(5))
+        .build()?;
+    let response = client.get("https://api.ipify.org").send().await?;
     let ip = response.text().await?;
     Ok(ip)
 }

@@ -19,7 +19,7 @@ All changes MUST follow TDD. No exceptions.
 5. **Run the full test suite** before considering the change complete
 
 ```bash
-# Run all tests (68 total: unit + integration)
+# Run all tests (58 total: 47 unit + 11 integration)
 cargo test
 
 # Run a specific test

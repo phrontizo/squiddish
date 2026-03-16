@@ -266,6 +266,14 @@ impl Config {
                 .collect();
         }
 
+        // Validate that critical parameters are not zero
+        if config.security.max_connections == 0 {
+            return Err("SQUIDDISH_MAX_CONNECTIONS must be greater than 0".to_string());
+        }
+        if config.security.timeout_seconds == 0 {
+            return Err("SQUIDDISH_TIMEOUT must be greater than 0".to_string());
+        }
+
         Ok(config)
     }
 }
@@ -325,6 +333,26 @@ mod tests {
         });
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("SQUIDDISH_APT_ENABLED"));
+    }
+
+    #[test]
+    fn test_from_vars_zero_max_connections() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_MAX_CONNECTIONS" => Some("0".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("greater than 0"));
+    }
+
+    #[test]
+    fn test_from_vars_zero_timeout() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_TIMEOUT" => Some("0".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("greater than 0"));
     }
 
     #[test]

@@ -42,6 +42,17 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                 sleep(Duration::from_millis(100)).await;
                                 "Slow response".to_string()
                             },
+                            "/slow-typed" => {
+                                // Slow response with explicit headers for concurrent header test
+                                sleep(Duration::from_millis(200)).await;
+                                let response = Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("content-type", "application/octet-stream")
+                                    .header("x-test-header", "test-value")
+                                    .body(Full::new(Bytes::from("typed slow response")))
+                                    .unwrap();
+                                return Ok::<_, Infallible>(response);
+                            },
                             "/cache-control" => {
                                 // Test cache header parsing
                                 let response = Response::builder()
@@ -69,6 +80,21 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                     .header("vary", "Accept-Encoding")
                                     .header("content-encoding", if accept_encoding.contains("gzip") { "gzip" } else { "identity" })
                                     .body(Full::new(Bytes::from(body)))
+                                    .unwrap();
+                                return Ok::<_, Infallible>(response);
+                            },
+                            "/echo" => {
+                                // Echo back the request method and body for passthrough tests
+                                let method = req.method().to_string();
+                                let body_bytes = http_body_util::BodyExt::collect(req.into_body())
+                                    .await
+                                    .unwrap()
+                                    .to_bytes();
+                                let body_str = String::from_utf8_lossy(&body_bytes);
+                                let response = Response::builder()
+                                    .status(StatusCode::OK)
+                                    .header("content-type", "text/plain")
+                                    .body(Full::new(Bytes::from(format!("{}: {}", method, body_str))))
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
                             },
@@ -297,7 +323,7 @@ async fn test_cache_control_headers() {
 }
 
 #[tokio::test]
-async fn test_http2_support() {
+async fn test_proxy_roundtrip() {
     let (origin_addr, _origin_handle) = start_test_server().await;
     let (proxy_addr, _proxy_handle) = start_proxy_server().await;
 
@@ -334,6 +360,73 @@ async fn test_apt_request_detection() {
     assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/stable/main/binary-amd64/Packages.gz"));
     assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/stable/InRelease"));
     assert!(!is_apt_package_list("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
+}
+
+#[tokio::test]
+async fn test_concurrent_downloads_preserve_headers() {
+    let (origin_addr, _origin_handle) = start_test_server().await;
+    let (proxy_addr, _proxy_handle) = start_proxy_server().await;
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", proxy_addr)).unwrap())
+        .build()
+        .unwrap();
+
+    // Start 3 concurrent requests for the same slow resource that returns explicit headers
+    let mut handles = vec![];
+    for i in 0..3 {
+        let client = client.clone();
+        let url = format!("http://{}/slow-typed", origin_addr);
+
+        let handle = tokio::spawn(async move {
+            let response = client.get(&url).send().await.unwrap();
+            let status = response.status();
+            let content_type = response
+                .headers()
+                .get("content-type")
+                .map(|v| v.to_str().unwrap().to_string());
+            let x_test = response
+                .headers()
+                .get("x-test-header")
+                .map(|v| v.to_str().unwrap().to_string());
+            let body = response.text().await.unwrap();
+            (i, status, content_type, x_test, body)
+        });
+
+        handles.push(handle);
+        // Stagger slightly so some join the in-flight download
+        sleep(Duration::from_millis(20)).await;
+    }
+
+    let results: Vec<_> = futures::future::join_all(handles)
+        .await
+        .into_iter()
+        .map(|r| r.unwrap())
+        .collect();
+
+    // ALL responses must have correct status, headers, and body
+    for (i, status, content_type, x_test, body) in &results {
+        assert_eq!(
+            *status,
+            StatusCode::OK,
+            "Request {} got wrong status: {:?}",
+            i,
+            status
+        );
+        assert_eq!(
+            content_type.as_deref(),
+            Some("application/octet-stream"),
+            "Request {} missing or wrong content-type header",
+            i
+        );
+        assert_eq!(
+            x_test.as_deref(),
+            Some("test-value"),
+            "Request {} missing or wrong x-test-header",
+            i
+        );
+        assert_eq!(body, "typed slow response", "Request {} wrong body", i);
+    }
 }
 
 #[tokio::test]
@@ -384,4 +477,75 @@ async fn test_vary_header_support() {
     assert_eq!(response3.status(), StatusCode::OK);
     let body3 = response3.text().await.unwrap();
     assert_eq!(body3, "gzip content");
+}
+
+/// Helper to start a proxy server with blocked hosts configured
+async fn start_proxy_server_with_blocked_hosts(blocked: Vec<String>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+    use squiddish::config::Config;
+    use squiddish::proxy::ProxyServer;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+
+    let mut config = Config::default();
+    config.bind_addr = addr;
+    config.security.blocked_hosts = blocked;
+
+    let server = ProxyServer::new(config).await.unwrap();
+
+    let handle = tokio::spawn(async move {
+        let _ = server.serve(listener).await;
+    });
+
+    wait_for_server(addr).await;
+    (addr, handle)
+}
+
+#[tokio::test]
+async fn test_post_passthrough() {
+    let (origin_addr, _origin_handle) = start_test_server().await;
+    let (proxy_addr, _proxy_handle) = start_proxy_server().await;
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", proxy_addr)).unwrap())
+        .build()
+        .unwrap();
+
+    // POST requests should pass through without caching
+    let response = client
+        .post(format!("http://{}/echo", origin_addr))
+        .body("hello world")
+        .send()
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = response.text().await.unwrap();
+    assert_eq!(body, "POST: hello world");
+}
+
+#[tokio::test]
+async fn test_blocked_host_rejected() {
+    let (origin_addr, _origin_handle) = start_test_server().await;
+
+    // Block the origin host (127.0.0.1)
+    let (proxy_addr, _proxy_handle) = start_proxy_server_with_blocked_hosts(
+        vec!["127.0.0.1".to_string()],
+    ).await;
+
+    let client = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::http(format!("http://{}", proxy_addr)).unwrap())
+        .build()
+        .unwrap();
+
+    let response = client
+        .get(format!("http://{}/test", origin_addr))
+        .send()
+        .await
+        .unwrap();
+
+    // Should get a 502 error page because the host is blocked
+    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    let body = response.text().await.unwrap();
+    assert!(body.contains("Host blocked"), "Expected blocked host error, got: {}", body);
 }

@@ -76,6 +76,9 @@ RUN RUST_TARGET=$(cat /tmp/rust-target) && \
 # Runtime stage - from scratch for minimal image
 FROM scratch
 
+# Link this image to the GitHub repository for GHCR permissions
+LABEL org.opencontainers.image.source="https://github.com/phrontizo/squiddish"
+
 # Copy CA certificates for HTTPS
 COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 

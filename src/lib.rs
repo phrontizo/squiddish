@@ -1,8 +1,8 @@
+pub mod apt;
 pub mod cache;
 pub mod config;
 pub mod error;
 pub mod proxy;
-pub mod apt;
 
 // Re-export commonly used items
 pub use config::Config;

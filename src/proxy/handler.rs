@@ -1,5 +1,7 @@
 use crate::apt::is_apt_request;
-use crate::cache::{CacheEntry, CacheKey, DownloadAction, DownloadChunk, ResponseMeta, TieredCache};
+use crate::cache::{
+    CacheEntry, CacheKey, DownloadAction, DownloadChunk, ResponseMeta, TieredCache,
+};
 use crate::config::Config;
 use crate::error::{ProxyError, Result};
 use crate::proxy::client::{collect_body, fetch_with_timeout, HttpClient};
@@ -22,7 +24,12 @@ pub struct ProxyHandler {
 }
 
 impl ProxyHandler {
-    pub fn new(cache: Arc<TieredCache>, config: Arc<Config>, client: HttpClient, peer_addr: SocketAddr) -> Self {
+    pub fn new(
+        cache: Arc<TieredCache>,
+        config: Arc<Config>,
+        client: HttpClient,
+        peer_addr: SocketAddr,
+    ) -> Self {
         Self {
             cache,
             config,
@@ -200,14 +207,19 @@ impl ProxyHandler {
                 let meta_result = meta_rx
                     .wait_for(|v| v.is_some())
                     .await
-                    .map_err(|_| ProxyError::Network("Download failed before headers received".to_string()))?
+                    .map_err(|_| {
+                        ProxyError::Network("Download failed before headers received".to_string())
+                    })?
                     .clone()
                     .unwrap();
 
                 let meta = meta_result.map_err(ProxyError::Network)?;
 
                 let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
-                    tracing::warn!("Invalid upstream status code {}, falling back to 200", meta.status);
+                    tracing::warn!(
+                        "Invalid upstream status code {}, falling back to 200",
+                        meta.status
+                    );
                     StatusCode::OK
                 });
                 let mut builder = Response::builder().status(status);
@@ -218,7 +230,8 @@ impl ProxyHandler {
                 Ok(builder.body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?)
             }
             DownloadAction::Started(sender, meta_rx) => {
-                self.handle_streaming_download(req, cache_key, sender, meta_rx).await
+                self.handle_streaming_download(req, cache_key, sender, meta_rx)
+                    .await
             }
         }
     }
@@ -242,16 +255,9 @@ impl ProxyHandler {
         // Spawn background task to fetch and broadcast
         tokio::spawn(async move {
             // Forward the request
-            let result = Self::fetch_and_stream(
-                client,
-                req,
-                &sender,
-                &cache,
-                &cache_key,
-                config.security.max_body_size,
-                config.security.timeout_seconds,
-                config.clone(),
-            ).await;
+            let result =
+                Self::fetch_and_stream(client, req, &sender, &cache, &cache_key, config.clone())
+                    .await;
 
             match result {
                 Ok(_) => {
@@ -261,7 +267,9 @@ impl ProxyHandler {
                 Err(e) => {
                     tracing::error!("Download failed: {} - {}", uri, e);
                     // Propagate error through meta channel so waiters get the actual message
-                    cache.inflight().set_response_error(&cache_key, e.to_string());
+                    cache
+                        .inflight()
+                        .set_response_error(&cache_key, e.to_string());
                     let _ = sender.send(DownloadChunk::Error(e.to_string()));
                 }
             }
@@ -281,7 +289,10 @@ impl ProxyHandler {
         let meta = meta_result.map_err(ProxyError::Network)?;
 
         let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
-            tracing::warn!("Invalid upstream status code {}, falling back to 200", meta.status);
+            tracing::warn!(
+                "Invalid upstream status code {}, falling back to 200",
+                meta.status
+            );
             StatusCode::OK
         });
         let mut builder = Response::builder().status(status);
@@ -306,10 +317,10 @@ impl ProxyHandler {
         sender: &tokio::sync::broadcast::Sender<DownloadChunk>,
         cache: &Arc<TieredCache>,
         cache_key: &CacheKey,
-        max_body_size: u64,
-        timeout_secs: u64,
         config: Arc<Config>,
     ) -> Result<()> {
+        let max_body_size = config.security.max_body_size;
+        let timeout_secs = config.security.timeout_seconds;
         // Build new request with full URI
         let uri = req.uri().clone();
         let method = req.method().clone();
@@ -349,10 +360,13 @@ impl ProxyHandler {
             .collect();
 
         // Publish response metadata so both initiator and joiners get correct headers
-        cache.inflight().set_response_meta(cache_key, ResponseMeta {
-            status: status.as_u16(),
-            headers: headers_vec.clone(),
-        });
+        cache.inflight().set_response_meta(
+            cache_key,
+            ResponseMeta {
+                status: status.as_u16(),
+                headers: headers_vec.clone(),
+            },
+        );
 
         // Stream the response body with a per-chunk timeout.
         // Without this, a stalling upstream would hang all joined clients indefinitely.
@@ -376,7 +390,9 @@ impl ProxyHandler {
             };
             if let Some(chunk) = frame.data_ref() {
                 if total_size + chunk.len() as u64 > max_body_size {
-                    return Err(ProxyError::ValidationFailed("Response body too large".to_string()));
+                    return Err(ProxyError::ValidationFailed(
+                        "Response body too large".to_string(),
+                    ));
                 }
 
                 let bytes = chunk.clone();
@@ -396,7 +412,11 @@ impl ProxyHandler {
         }
 
         if !cacheable {
-            tracing::debug!("Response not cacheable: status={}, uri={}", status, cache_key.uri());
+            tracing::debug!(
+                "Response not cacheable: status={}, uri={}",
+                status,
+                cache_key.uri()
+            );
             return Ok(());
         }
 
@@ -413,8 +433,7 @@ impl ProxyHandler {
             }
         } else {
             // For non-APT, parse cache control headers
-            Self::parse_cache_control_headers(&response_headers)
-                .unwrap_or(config.cache.ttl_seconds)
+            Self::parse_cache_control_headers(&response_headers).unwrap_or(config.cache.ttl_seconds)
         };
 
         let entry = CacheEntry {
@@ -439,7 +458,8 @@ impl ProxyHandler {
                 let mut s_maxage = None;
 
                 for directive in value.split(',') {
-                    let directive = directive.trim();
+                    // RFC 7234: Cache directives are case-insensitive
+                    let directive = directive.trim().to_ascii_lowercase();
                     if let Some(val) = directive.strip_prefix("s-maxage=") {
                         if let Ok(seconds) = val.parse::<u64>() {
                             s_maxage = Some(seconds);
@@ -452,11 +472,12 @@ impl ProxyHandler {
                 }
 
                 // s-maxage takes precedence over max-age for shared caches (RFC 7234)
+                // Return None for zero TTL — entry would be immediately stale, wasting I/O
                 if let Some(ttl) = s_maxage {
-                    return Some(ttl);
+                    return if ttl > 0 { Some(ttl) } else { None };
                 }
                 if let Some(ttl) = max_age {
-                    return Some(ttl);
+                    return if ttl > 0 { Some(ttl) } else { None };
                 }
             }
         }
@@ -505,17 +526,14 @@ impl ProxyHandler {
         );
 
         // Forward request
-        let response = fetch_with_timeout(
-            &self.client,
-            new_req,
-            self.config.security.timeout_seconds,
-        )
-        .await?;
+        let response =
+            fetch_with_timeout(&self.client, new_req, self.config.security.timeout_seconds).await?;
 
         // Collect response body
         let status = response.status();
         let headers = response.headers().clone();
-        let body_bytes = collect_body(response.into_body(), self.config.security.max_body_size).await?;
+        let body_bytes =
+            collect_body(response.into_body(), self.config.security.max_body_size).await?;
 
         // Build response
         let mut resp = Response::builder()
@@ -534,12 +552,16 @@ impl ProxyHandler {
 
         // Include Accept-Encoding in cache key since servers commonly vary on it.
         // User-Agent is excluded to avoid massive cache fragmentation.
-        let vary_headers: Vec<(String, String)> = req.headers()
+        let vary_headers: Vec<(String, String)> = req
+            .headers()
             .iter()
             .filter_map(|(name, value)| {
-                let name_str = name.as_str().to_lowercase();
-                if name_str == "accept-encoding" {
-                    Some((name.as_str().to_string(), value.to_str().unwrap_or("").to_string()))
+                // hyper normalizes header names to lowercase, so no .to_lowercase() needed
+                if name.as_str() == "accept-encoding" {
+                    Some((
+                        name.as_str().to_string(),
+                        value.to_str().unwrap_or("").to_string(),
+                    ))
                 } else {
                     None
                 }
@@ -620,13 +642,20 @@ impl ProxyHandler {
 </html>"#,
             html_escape(&error.to_string()),
             self.peer_addr,
-            chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")
+            httpdate::fmt_http_date(SystemTime::now())
         );
 
+        let status = match error {
+            ProxyError::ValidationFailed(_) | ProxyError::InvalidUri(_) => StatusCode::BAD_REQUEST,
+            _ => StatusCode::BAD_GATEWAY,
+        };
+
+        let body = Bytes::from(error_html);
         Response::builder()
-            .status(StatusCode::BAD_GATEWAY)
+            .status(status)
             .header("content-type", "text/html; charset=utf-8")
-            .body(Either::Left(Full::new(Bytes::from(error_html))))
+            .header("content-length", body.len().to_string())
+            .body(Either::Left(Full::new(body)))
             .unwrap()
     }
 }
@@ -692,10 +721,18 @@ fn html_escape(s: &str) -> String {
         .replace('\'', "&#x27;")
 }
 
+/// Strip port from a host string (e.g., "example.com:8080" -> "example.com").
+/// Handles both plain hosts and hosts with ports. Does not handle IPv6 bracket notation
+/// since those come through uri.host() which already strips brackets.
+fn strip_host_port(host: &str) -> &str {
+    host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
+}
+
 /// Match a hostname against a pattern using exact match or subdomain suffix.
 /// Pattern "example.com" matches "example.com" and "sub.example.com"
-/// but NOT "evil-example.com".
+/// but NOT "evil-example.com". Strips port from host before matching.
 fn host_matches(host: &str, pattern: &str) -> bool {
+    let host = strip_host_port(host);
     host == pattern
         || (host.len() > pattern.len()
             && host.ends_with(pattern)
@@ -737,10 +774,19 @@ fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
 }
 
 fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, StreamingBody>> {
-    let mut builder = Response::builder().status(entry.status);
+    // Validate status code first; fall back to 200 if corrupted (e.g., from tampered disk cache)
+    let status = StatusCode::from_u16(entry.status).unwrap_or_else(|_| {
+        tracing::warn!(
+            "Corrupted cache entry status {}, falling back to 200",
+            entry.status
+        );
+        StatusCode::OK
+    });
 
-    for (name, value) in entry.headers {
-        builder = builder.header(name, value);
+    let mut builder = Response::builder().status(status);
+
+    for (name, value) in &entry.headers {
+        builder = builder.header(name.as_str(), value.as_str());
     }
 
     // Add cache hit header
@@ -752,13 +798,10 @@ fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, 
         builder = builder.header("x-cache-ttl", remaining_ttl.to_string());
     }
 
+    // Status is pre-validated above, so this should always succeed
     builder
         .body(Either::Left(Full::new(entry.data)))
-        .unwrap_or_else(|_| {
-            // Fallback: if builder failed (e.g., corrupted status code from disk cache),
-            // return a plain 200 with the data rather than panicking.
-            Response::new(Either::Left(Full::new(Bytes::new())))
-        })
+        .unwrap_or_else(|_| Response::new(Either::Left(Full::new(Bytes::new()))))
 }
 
 fn filter_headers(mut headers: hyper::HeaderMap) -> hyper::HeaderMap {
@@ -828,6 +871,10 @@ mod tests {
         assert!(!host_matches("example.com.attacker.org", "example.com"));
         // Edge case: pattern longer than host
         assert!(!host_matches("com", "example.com"));
+        // Host with port should still match
+        assert!(host_matches("example.com:8080", "example.com"));
+        assert!(host_matches("sub.example.com:443", "example.com"));
+        assert!(!host_matches("evil-example.com:8080", "example.com"));
     }
 
     #[test]
@@ -837,7 +884,10 @@ mod tests {
 
         // Non-2xx should not be cached
         assert!(!should_cache_response(StatusCode::NOT_FOUND, &headers));
-        assert!(!should_cache_response(StatusCode::INTERNAL_SERVER_ERROR, &headers));
+        assert!(!should_cache_response(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            &headers
+        ));
 
         // no-store
         headers.insert("cache-control", "no-store".parse().unwrap());
@@ -862,15 +912,37 @@ mod tests {
 
         // s-maxage should take precedence over max-age
         headers.insert("cache-control", "max-age=0, s-maxage=3600".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(3600));
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(3600)
+        );
 
         // max-age alone
         headers.insert("cache-control", "max-age=300".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(300));
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(300)
+        );
 
         // s-maxage alone
         headers.insert("cache-control", "s-maxage=600".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(600));
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(600)
+        );
+
+        // Case-insensitive per RFC 7234
+        headers.insert("cache-control", "Max-Age=120".parse().unwrap());
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(120)
+        );
+
+        headers.insert("cache-control", "S-MAXAGE=900".parse().unwrap());
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(900)
+        );
     }
 
     #[test]
@@ -942,7 +1014,10 @@ mod tests {
     #[test]
     fn test_html_escape() {
         assert_eq!(html_escape("hello"), "hello");
-        assert_eq!(html_escape("<script>alert(1)</script>"), "&lt;script&gt;alert(1)&lt;/script&gt;");
+        assert_eq!(
+            html_escape("<script>alert(1)</script>"),
+            "&lt;script&gt;alert(1)&lt;/script&gt;"
+        );
         assert_eq!(html_escape("a&b"), "a&amp;b");
         assert_eq!(html_escape(r#"he said "hi""#), "he said &quot;hi&quot;");
         assert_eq!(html_escape("it's"), "it&#x27;s");

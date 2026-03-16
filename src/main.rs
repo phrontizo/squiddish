@@ -1,22 +1,6 @@
-mod cache;
-mod config;
-mod error;
-mod proxy;
-mod apt;
-
 use anyhow::Result;
-use config::Config;
-use proxy::ProxyServer;
+use squiddish::{Config, ProxyServer};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
-
-async fn get_external_ip() -> Result<String> {
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(5))
-        .build()?;
-    let response = client.get("https://api.ipify.org").send().await?;
-    let ip = response.text().await?;
-    Ok(ip)
-}
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -33,11 +17,6 @@ async fn main() -> Result<()> {
         eprintln!("Configuration error: {}", e);
         std::process::exit(1);
     });
-
-    // Log external IP address
-    if let Ok(ip) = get_external_ip().await {
-        tracing::info!("External IP address: {}", ip);
-    }
 
     let server = ProxyServer::new(config).await?;
     server.run().await?;

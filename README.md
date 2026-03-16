@@ -115,7 +115,7 @@ APT requests are automatically detected and given optimized TTL values:
 
 | Header        | Values        | Description                             |
 |---------------|---------------|-----------------------------------------|
-| `X-Cache`     | `HIT`, `MISS` | Indicates cache hit/miss                |
+| `X-Cache`     | `HIT`         | Present on cache hits (absent on miss)  |
 | `X-Cache-TTL` | Seconds       | Remaining TTL for cached items (on HIT) |
 | `Via`         | `1.1 squiddish` | Standard proxy identification header |
 
@@ -178,7 +178,7 @@ Acquire::http::Proxy "http://127.0.0.1:3128";
 ### Running Tests
 
 ```bash
-# All tests (68 total: 30 unit + 30 bin + 8 integration)
+# Run all tests
 cargo test
 
 # Unit tests only

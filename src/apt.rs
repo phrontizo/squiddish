@@ -16,10 +16,7 @@ pub fn is_apt_request(uri: &str) -> bool {
     }
 
     // APT-specific directory structures
-    let apt_dirs = [
-        "/dists/",
-        "/pool/",
-    ];
+    let apt_dirs = ["/dists/", "/pool/"];
 
     if apt_dirs.iter().any(|dir| uri.contains(dir)) {
         return true;
@@ -45,12 +42,7 @@ pub fn is_apt_request(uri: &str) -> bool {
 /// Determine if an APT request is a package list (should be cached shorter)
 /// Package lists change frequently as repositories are updated
 pub fn is_apt_package_list(uri: &str) -> bool {
-    let list_patterns = [
-        "Packages.gz",
-        "Packages.xz",
-        "Packages.bz2",
-        "InRelease",
-    ];
+    let list_patterns = ["Packages.gz", "Packages.xz", "Packages.bz2", "InRelease"];
 
     if list_patterns.iter().any(|pattern| uri.contains(pattern)) {
         return true;
@@ -73,9 +65,15 @@ mod tests {
     #[test]
     fn test_is_apt_request() {
         assert!(is_apt_request("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
-        assert!(is_apt_request("http://deb.debian.org/debian/dists/bullseye/Release"));
-        assert!(is_apt_request("http://custom-mirror.example.com/dists/focal/main/binary-amd64/Packages.gz"));
-        assert!(is_apt_request("http://custom-mirror.example.com/pool/main/a/apache2/apache2.deb"));
+        assert!(is_apt_request(
+            "http://deb.debian.org/debian/dists/bullseye/Release"
+        ));
+        assert!(is_apt_request(
+            "http://custom-mirror.example.com/dists/focal/main/binary-amd64/Packages.gz"
+        ));
+        assert!(is_apt_request(
+            "http://custom-mirror.example.com/pool/main/a/apache2/apache2.deb"
+        ));
         assert!(!is_apt_request("http://example.com/file.tar.gz"));
         // Should NOT match broad patterns like /ubuntu/ or /debian/ in arbitrary URLs
         assert!(!is_apt_request("https://wiki.debian.org/Teams/Dpkg"));
@@ -84,16 +82,24 @@ mod tests {
 
     #[test]
     fn test_is_apt_package_list() {
-        assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/focal/main/binary-amd64/Packages.gz"));
-        assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/focal/Release"));
-        assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/focal/InRelease"));
+        assert!(is_apt_package_list(
+            "http://archive.ubuntu.com/ubuntu/dists/focal/main/binary-amd64/Packages.gz"
+        ));
+        assert!(is_apt_package_list(
+            "http://archive.ubuntu.com/ubuntu/dists/focal/Release"
+        ));
+        assert!(is_apt_package_list(
+            "http://archive.ubuntu.com/ubuntu/dists/focal/InRelease"
+        ));
         assert!(!is_apt_package_list("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
     }
 
     #[test]
     fn test_is_apt_package_file() {
         assert!(is_apt_package_file("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
-        assert!(!is_apt_package_file("http://archive.ubuntu.com/ubuntu/dists/focal/Release"));
+        assert!(!is_apt_package_file(
+            "http://archive.ubuntu.com/ubuntu/dists/focal/Release"
+        ));
     }
 
     #[test]

@@ -38,7 +38,7 @@ pub async fn fetch_with_timeout(
             tracing::error!("DNS lookup or connection timeout for: {}", host);
             ProxyError::Io(std::io::Error::new(
                 std::io::ErrorKind::TimedOut,
-                format!("Request timed out connecting to {}", host)
+                format!("Request timed out connecting to {}", host),
             ))
         })?
         .map_err(|e| {
@@ -65,7 +65,8 @@ fn is_dns_error(err: &(dyn std::error::Error + 'static)) -> bool {
             if io_err.kind() == std::io::ErrorKind::Other {
                 // getaddrinfo failures surface as "Other" io errors
                 let msg = io_err.to_string();
-                if msg.contains("dns") || msg.contains("resolve")
+                if msg.contains("dns")
+                    || msg.contains("resolve")
                     || msg.contains("Name or service not known")
                     || msg.contains("nodename nor servname provided")
                     || msg.contains("No address associated with hostname")
@@ -79,9 +80,8 @@ fn is_dns_error(err: &(dyn std::error::Error + 'static)) -> bool {
     false
 }
 
-pub async fn collect_body(body: Incoming, max_size: u64) -> Result<Bytes> {
+pub async fn collect_body(mut body: Incoming, max_size: u64) -> Result<Bytes> {
     let mut collected = Vec::new();
-    let mut body = body;
 
     while let Some(frame) = body.frame().await {
         let frame = frame?;

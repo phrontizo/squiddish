@@ -1,12 +1,12 @@
 use bytes::Bytes;
 use http_body_util::Full;
-use hyper::{Request, Response, StatusCode};
 use hyper::body::Incoming;
 use hyper::service::service_fn;
+use hyper::{Request, Response, StatusCode};
 use std::convert::Infallible;
 use std::net::SocketAddr;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tokio::time::{sleep, Duration};
 
@@ -36,12 +36,12 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                             "/large" => {
                                 // 1MB of data for streaming test
                                 "x".repeat(1024 * 1024)
-                            },
+                            }
                             "/slow" => {
                                 // Simulate slow response for concurrent test
                                 sleep(Duration::from_millis(100)).await;
                                 "Slow response".to_string()
-                            },
+                            }
                             "/slow-typed" => {
                                 // Slow response with explicit headers for concurrent header test
                                 sleep(Duration::from_millis(200)).await;
@@ -52,7 +52,7 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                     .body(Full::new(Bytes::from("typed slow response")))
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
-                            },
+                            }
                             "/cache-control" => {
                                 // Test cache header parsing
                                 let response = Response::builder()
@@ -61,10 +61,11 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                     .body(Full::new(Bytes::from("Cached content")))
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
-                            },
+                            }
                             "/vary" => {
                                 // Test Vary header support - response varies by Accept-Encoding
-                                let accept_encoding = req.headers()
+                                let accept_encoding = req
+                                    .headers()
                                     .get("accept-encoding")
                                     .and_then(|v| v.to_str().ok())
                                     .unwrap_or("identity");
@@ -78,11 +79,18 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                 let response = Response::builder()
                                     .status(StatusCode::OK)
                                     .header("vary", "Accept-Encoding")
-                                    .header("content-encoding", if accept_encoding.contains("gzip") { "gzip" } else { "identity" })
+                                    .header(
+                                        "content-encoding",
+                                        if accept_encoding.contains("gzip") {
+                                            "gzip"
+                                        } else {
+                                            "identity"
+                                        },
+                                    )
                                     .body(Full::new(Bytes::from(body)))
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
-                            },
+                            }
                             "/echo" => {
                                 // Echo back the request method and body for passthrough tests
                                 let method = req.method().to_string();
@@ -94,10 +102,13 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                 let response = Response::builder()
                                     .status(StatusCode::OK)
                                     .header("content-type", "text/plain")
-                                    .body(Full::new(Bytes::from(format!("{}: {}", method, body_str))))
+                                    .body(Full::new(Bytes::from(format!(
+                                        "{}: {}",
+                                        method, body_str
+                                    ))))
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
-                            },
+                            }
                             _ => "Not found".to_string(),
                         };
 
@@ -105,9 +116,11 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                     }
                 });
 
-                let _ = hyper_util::server::conn::auto::Builder::new(hyper_util::rt::TokioExecutor::new())
-                    .serve_connection(io, service)
-                    .await;
+                let _ = hyper_util::server::conn::auto::Builder::new(
+                    hyper_util::rt::TokioExecutor::new(),
+                )
+                .serve_connection(io, service)
+                .await;
             });
         }
     });
@@ -123,8 +136,10 @@ async fn start_proxy_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let mut config = Config::default();
-    config.bind_addr = addr;
+    let config = Config {
+        bind_addr: addr,
+        ..Config::default()
+    };
 
     let server = ProxyServer::new(config).await.unwrap();
 
@@ -204,8 +219,16 @@ async fn test_cache_hit_miss_behavior() {
     assert_eq!(response2.status(), StatusCode::OK);
 
     // Check for cache hit header and TTL before consuming body
-    let has_cache_hit = response2.headers().get("x-cache").map(|v| v.to_str().unwrap()) == Some("HIT");
-    let cache_ttl = response2.headers().get("x-cache-ttl").and_then(|v| v.to_str().ok()).map(|s| s.to_string());
+    let has_cache_hit = response2
+        .headers()
+        .get("x-cache")
+        .map(|v| v.to_str().unwrap())
+        == Some("HIT");
+    let cache_ttl = response2
+        .headers()
+        .get("x-cache-ttl")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
     let body2 = response2.text().await.unwrap();
 
     // Both responses should have same content
@@ -213,10 +236,19 @@ async fn test_cache_hit_miss_behavior() {
     assert!(has_cache_hit, "Expected cache HIT header");
 
     // Verify X-Cache-TTL header is present and is a valid number
-    assert!(cache_ttl.is_some(), "Expected X-Cache-TTL header on cache hit");
-    let ttl_value = cache_ttl.unwrap().parse::<u64>().expect("X-Cache-TTL should be a valid number");
+    assert!(
+        cache_ttl.is_some(),
+        "Expected X-Cache-TTL header on cache hit"
+    );
+    let ttl_value = cache_ttl
+        .unwrap()
+        .parse::<u64>()
+        .expect("X-Cache-TTL should be a valid number");
     assert!(ttl_value > 0, "X-Cache-TTL should be greater than 0");
-    assert!(ttl_value <= 7 * 24 * 60 * 60, "X-Cache-TTL should not exceed default TTL of 7 days");
+    assert!(
+        ttl_value <= 7 * 24 * 60 * 60,
+        "X-Cache-TTL should not exceed default TTL of 7 days"
+    );
 }
 
 #[tokio::test]
@@ -258,7 +290,7 @@ async fn test_concurrent_streaming_downloads() {
     // All requests should have same body
     for (i, body, elapsed) in &results {
         assert_eq!(body, "Slow response", "Request {} failed", i);
-        println!("Request {} completed in {:?}", i, elapsed);
+        eprintln!("Request {} completed in {:?}", i, elapsed);
     }
 }
 
@@ -318,7 +350,11 @@ async fn test_cache_control_headers() {
         .unwrap();
 
     assert_eq!(response2.status(), StatusCode::OK);
-    let has_cache_hit = response2.headers().get("x-cache").map(|v| v.to_str().unwrap()) == Some("HIT");
+    let has_cache_hit = response2
+        .headers()
+        .get("x-cache")
+        .map(|v| v.to_str().unwrap())
+        == Some("HIT");
     assert!(has_cache_hit, "Expected cache HIT header");
 }
 
@@ -345,21 +381,35 @@ async fn test_proxy_roundtrip() {
 
 #[tokio::test]
 async fn test_apt_request_detection() {
-    use squiddish::apt::{is_apt_request, is_apt_package_file, is_apt_package_list};
+    use squiddish::apt::{is_apt_package_file, is_apt_package_list, is_apt_request};
 
     // Test APT request detection
-    assert!(is_apt_request("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
-    assert!(is_apt_request("http://deb.debian.org/debian/dists/stable/main/binary-amd64/Packages.gz"));
+    assert!(is_apt_request(
+        "http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"
+    ));
+    assert!(is_apt_request(
+        "http://deb.debian.org/debian/dists/stable/main/binary-amd64/Packages.gz"
+    ));
     assert!(!is_apt_request("http://example.com/file.tar.gz"));
 
     // Test package file detection
-    assert!(is_apt_package_file("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
-    assert!(!is_apt_package_file("http://archive.ubuntu.com/ubuntu/dists/stable/Release"));
+    assert!(is_apt_package_file(
+        "http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"
+    ));
+    assert!(!is_apt_package_file(
+        "http://archive.ubuntu.com/ubuntu/dists/stable/Release"
+    ));
 
     // Test package list detection
-    assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/stable/main/binary-amd64/Packages.gz"));
-    assert!(is_apt_package_list("http://archive.ubuntu.com/ubuntu/dists/stable/InRelease"));
-    assert!(!is_apt_package_list("http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"));
+    assert!(is_apt_package_list(
+        "http://archive.ubuntu.com/ubuntu/dists/stable/main/binary-amd64/Packages.gz"
+    ));
+    assert!(is_apt_package_list(
+        "http://archive.ubuntu.com/ubuntu/dists/stable/InRelease"
+    ));
+    assert!(!is_apt_package_list(
+        "http://archive.ubuntu.com/ubuntu/pool/main/a/apache2/apache2_2.4.41-4ubuntu3_amd64.deb"
+    ));
 }
 
 #[tokio::test]
@@ -480,16 +530,24 @@ async fn test_vary_header_support() {
 }
 
 /// Helper to start a proxy server with blocked hosts configured
-async fn start_proxy_server_with_blocked_hosts(blocked: Vec<String>) -> (SocketAddr, tokio::task::JoinHandle<()>) {
+async fn start_proxy_server_with_blocked_hosts(
+    blocked: Vec<String>,
+) -> (SocketAddr, tokio::task::JoinHandle<()>) {
     use squiddish::config::Config;
     use squiddish::proxy::ProxyServer;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
-    let mut config = Config::default();
-    config.bind_addr = addr;
-    config.security.blocked_hosts = blocked;
+    let default_security = squiddish::config::SecurityConfig::default();
+    let config = Config {
+        bind_addr: addr,
+        security: squiddish::config::SecurityConfig {
+            blocked_hosts: blocked,
+            ..default_security
+        },
+        ..Config::default()
+    };
 
     let server = ProxyServer::new(config).await.unwrap();
 
@@ -529,9 +587,8 @@ async fn test_blocked_host_rejected() {
     let (origin_addr, _origin_handle) = start_test_server().await;
 
     // Block the origin host (127.0.0.1)
-    let (proxy_addr, _proxy_handle) = start_proxy_server_with_blocked_hosts(
-        vec!["127.0.0.1".to_string()],
-    ).await;
+    let (proxy_addr, _proxy_handle) =
+        start_proxy_server_with_blocked_hosts(vec!["127.0.0.1".to_string()]).await;
 
     let client = reqwest::Client::builder()
         .proxy(reqwest::Proxy::http(format!("http://{}", proxy_addr)).unwrap())
@@ -544,8 +601,12 @@ async fn test_blocked_host_rejected() {
         .await
         .unwrap();
 
-    // Should get a 502 error page because the host is blocked
-    assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+    // Should get a 400 error page because the host is blocked (validation failure)
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
     let body = response.text().await.unwrap();
-    assert!(body.contains("Host blocked"), "Expected blocked host error, got: {}", body);
+    assert!(
+        body.contains("Host blocked"),
+        "Expected blocked host error, got: {}",
+        body
+    );
 }

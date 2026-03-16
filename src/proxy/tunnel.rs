@@ -25,7 +25,9 @@ pub async fn handle_connect_tunnel(
         Ok((from_client, from_target)) => {
             tracing::debug!(
                 "Tunnel closed for {} (client->target: {} bytes, target->client: {} bytes)",
-                target_addr, from_client, from_target
+                target_addr,
+                from_client,
+                from_target
             );
         }
         Err(e) => {
@@ -36,4 +38,3 @@ pub async fn handle_connect_tunnel(
     tracing::info!("CONNECT tunnel closed for {}", target_addr);
     Ok(())
 }
-

@@ -1,7 +1,7 @@
-mod handler;
-mod tunnel;
 mod client;
+mod handler;
 mod streaming;
+mod tunnel;
 
 use crate::cache::TieredCache;
 use crate::config::Config;

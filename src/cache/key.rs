@@ -1,4 +1,4 @@
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 /// Cache key based on request method, URI, and relevant headers
@@ -75,9 +75,7 @@ mod tests {
 
     #[test]
     fn test_cache_key_with_headers() {
-        let headers = vec![
-            ("Accept-Encoding".to_string(), "gzip".to_string()),
-        ];
+        let headers = vec![("Accept-Encoding".to_string(), "gzip".to_string())];
         let key1 = CacheKey::new("GET", "http://example.com/file", &headers);
         let key2 = CacheKey::new("GET", "http://example.com/file", &[]);
         assert_ne!(key1, key2);

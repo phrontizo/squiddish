@@ -19,7 +19,7 @@ All changes MUST follow TDD. No exceptions.
 5. **Run the full test suite** before considering the change complete
 
 ```bash
-# Run all tests (58 total: 47 unit + 11 integration)
+# Run all tests
 cargo test
 
 # Run a specific test
@@ -48,7 +48,7 @@ RUST_LOG=debug cargo test
 - **BroadcastStream for streaming**: `tokio_stream::wrappers::BroadcastStream` for correct async waker registration (never use manual `try_recv` + `wake_by_ref`)
 - **copy_bidirectional for tunneling**: Correctly handles TCP half-close
 - **Pre-connect before 200 OK**: CONNECT handler connects to target first, then sends success to client
-- **Write lock in join_download**: Prevents add_chunk race between subscribe and accumulated read
+- **Atomic join_or_start_download**: Single write lock prevents TOCTOU between check and insert, and blocks add_chunk during subscribe + accumulated read
 - **s-maxage precedence**: Per RFC 7234, `s-maxage` takes priority over `max-age` for shared caches
 - **Config returns Result**: Invalid env vars terminate the process with a descriptive error
 

@@ -1,12 +1,14 @@
-mod memory;
 mod disk;
-mod key;
 mod inflight;
+mod key;
+mod memory;
 
-pub use memory::MemoryCache;
 pub use disk::DiskCache;
+pub use inflight::{
+    DownloadAction, DownloadChunk, InflightDownloads, ResponseMeta, ResponseMetaResult,
+};
 pub use key::CacheKey;
-pub use inflight::{InflightDownloads, DownloadAction, DownloadChunk, ResponseMeta, ResponseMetaResult};
+pub use memory::MemoryCache;
 
 use bytes::Bytes;
 use std::time::SystemTime;
@@ -31,8 +33,12 @@ impl CacheEntry {
 
     pub fn size(&self) -> usize {
         self.data.len()
-            + self.headers.iter().map(|(k, v)| k.len() + v.len()).sum::<usize>()
-            + 10 // status + timestamp overhead
+            + self
+                .headers
+                .iter()
+                .map(|(k, v)| k.len() + v.len() + 48) // +48 for two String heap allocs (24 bytes each)
+                .sum::<usize>()
+            + 64 // Bytes struct + Vec header + status + timestamp overhead
     }
 }
 
@@ -53,7 +59,11 @@ impl TieredCache {
         let disk = DiskCache::new(disk_cache_dir, disk_size).await?;
         let inflight = InflightDownloads::new();
 
-        Ok(Self { memory, disk, inflight })
+        Ok(Self {
+            memory,
+            disk,
+            inflight,
+        })
     }
 
     pub fn inflight(&self) -> &InflightDownloads {
@@ -129,8 +139,106 @@ mod tests {
     #[test]
     fn test_cache_entry_size() {
         let entry = create_test_entry();
-        // "test data" = 9 bytes data + "content-type"(12) + "text/plain"(10) = 22 header bytes + 10 overhead = 41
-        let expected = 9 + 12 + 10 + 10;
+        // 9 bytes data + (12 + 10 + 48) per-header with heap overhead + 64 struct overhead
+        let expected = 9 + (12 + 10 + 48) + 64;
         assert_eq!(entry.size(), expected);
+    }
+
+    #[tokio::test]
+    async fn test_tiered_cache_small_entry_memory_only() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache = TieredCache::new(
+            10 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+            10 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+
+        let key = CacheKey::new("GET", "http://example.com/small", &[]);
+        let entry = create_test_entry();
+
+        // Small entry (<1MB) goes to memory only
+        cache.put(key.clone(), entry.clone()).await.unwrap();
+
+        // Should be retrievable
+        let retrieved = cache.get(&key).await.unwrap();
+        assert!(retrieved.is_some());
+        assert_eq!(retrieved.unwrap().data, entry.data);
+
+        // Should NOT be on disk (small entry)
+        let disk_entry = cache.disk.get(&key).await.unwrap();
+        assert!(
+            disk_entry.is_none(),
+            "Small entry should not be written to disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_tiered_cache_large_entry_on_disk() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache = TieredCache::new(
+            10 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+            10 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+
+        let key = CacheKey::new("GET", "http://example.com/large", &[]);
+        // Create an entry >1MB to trigger disk write
+        let entry = CacheEntry {
+            data: Bytes::from(vec![0u8; 2 * 1024 * 1024]),
+            headers: vec![],
+            status: 200,
+            timestamp: SystemTime::now(),
+            ttl_seconds: 3600,
+        };
+
+        cache.put(key.clone(), entry.clone()).await.unwrap();
+
+        // Should be on disk
+        let disk_entry = cache.disk.get(&key).await.unwrap();
+        assert!(
+            disk_entry.is_some(),
+            "Large entry should be written to disk"
+        );
+        assert_eq!(disk_entry.unwrap().data.len(), 2 * 1024 * 1024);
+    }
+
+    #[tokio::test]
+    async fn test_tiered_cache_disk_to_memory_promotion() {
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let cache = TieredCache::new(
+            10 * 1024 * 1024,
+            temp_dir.path().to_path_buf(),
+            10 * 1024 * 1024,
+        )
+        .await
+        .unwrap();
+
+        let key = CacheKey::new("GET", "http://example.com/promote", &[]);
+        let entry = CacheEntry {
+            data: Bytes::from(vec![0u8; 2 * 1024 * 1024]),
+            headers: vec![],
+            status: 200,
+            timestamp: SystemTime::now(),
+            ttl_seconds: 3600,
+        };
+
+        // Put large entry (goes to both memory and disk)
+        cache.put(key.clone(), entry).await.unwrap();
+
+        // Remove from memory to simulate eviction
+        cache.memory.remove(&key).await;
+        assert!(cache.memory.get(&key).await.is_none());
+
+        // Get should find it on disk and promote to memory
+        let retrieved = cache.get(&key).await.unwrap();
+        assert!(retrieved.is_some());
+
+        // Now it should be back in memory
+        let memory_entry = cache.memory.get(&key).await;
+        assert!(memory_entry.is_some(), "Disk hit should promote to memory");
     }
 }

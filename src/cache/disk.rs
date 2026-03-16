@@ -36,8 +36,8 @@ pub struct DiskCache {
     cache_dir: PathBuf,
     max_size: u64,
     current_size: RwLock<u64>,
-    /// Eviction order: (hash_hex, entry_size) — oldest entries at the front
-    eviction_order: RwLock<VecDeque<(String, u64)>>,
+    /// Eviction order: hash_hex strings, oldest entries at the front
+    eviction_order: RwLock<VecDeque<String>>,
     /// Serializes write operations (evict + put) to prevent TOCTOU races
     /// where concurrent puts both read the same current_size and over-evict.
     write_mutex: tokio::sync::Mutex<()>,
@@ -70,12 +70,20 @@ impl DiskCache {
         while let Some(dir) = stack.pop() {
             let mut entries = match fs::read_dir(&dir).await {
                 Ok(e) => e,
-                Err(_) => continue,
+                Err(e) => {
+                    tracing::warn!("Failed to read cache directory {:?}: {}", dir, e);
+                    continue;
+                }
             };
 
             while let Ok(Some(entry)) = entries.next_entry().await {
                 let path = entry.path();
-                if path.is_dir() {
+                let is_dir = entry
+                    .file_type()
+                    .await
+                    .map(|ft| ft.is_dir())
+                    .unwrap_or(false);
+                if is_dir {
                     stack.push(path);
                 } else if path.extension().and_then(|s| s.to_str()) == Some("meta") {
                     if let Ok(metadata) = fs::metadata(&path).await {
@@ -106,8 +114,8 @@ impl DiskCache {
 
         let mut eviction_order = self.eviction_order.write();
         eviction_order.clear();
-        for (hash_hex, size, _) in files {
-            eviction_order.push_back((hash_hex, size));
+        for (hash_hex, _, _) in files {
+            eviction_order.push_back(hash_hex);
         }
 
         *self.current_size.write() = total_size;
@@ -136,32 +144,52 @@ impl DiskCache {
                 order.pop_front()
             };
 
-            let Some((hash_hex, tracked_size)) = entry else {
+            let Some(hash_hex) = entry else {
                 break;
             };
 
             if current_size.saturating_sub(freed) <= target_size {
                 // Put it back, we've freed enough
-                self.eviction_order.write().push_front((hash_hex, tracked_size));
+                self.eviction_order.write().push_front(hash_hex);
                 break;
             }
 
             // Construct file paths from hash_hex
             let shard = &hash_hex[0..2.min(hash_hex.len())];
-            let subshard = if hash_hex.len() >= 4 { &hash_hex[2..4] } else { "" };
-            let meta_path = self.cache_dir.join(shard).join(subshard).join(format!("{}.meta", hash_hex));
+            let subshard = if hash_hex.len() >= 4 {
+                &hash_hex[2..4]
+            } else {
+                ""
+            };
+            let meta_path = self
+                .cache_dir
+                .join(shard)
+                .join(subshard)
+                .join(format!("{}.meta", hash_hex));
             let data_path = meta_path.with_extension("data");
 
             // Get actual file sizes
-            let meta_size = fs::metadata(&meta_path).await.ok().map(|m| m.len()).unwrap_or(0);
-            let data_size = fs::metadata(&data_path).await.ok().map(|m| m.len()).unwrap_or(0);
+            let meta_size = fs::metadata(&meta_path)
+                .await
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(0);
+            let data_size = fs::metadata(&data_path)
+                .await
+                .ok()
+                .map(|m| m.len())
+                .unwrap_or(0);
             let actual_size = meta_size + data_size;
 
             let _ = fs::remove_file(&meta_path).await;
             let _ = fs::remove_file(&data_path).await;
 
             freed += actual_size;
-            tracing::debug!("Evicted disk cache entry {}: {} bytes freed", hash_hex, actual_size);
+            tracing::debug!(
+                "Evicted disk cache entry {}: {} bytes freed",
+                hash_hex,
+                actual_size
+            );
         }
 
         let mut current = self.current_size.write();
@@ -169,7 +197,13 @@ impl DiskCache {
         Ok(())
     }
 
-    async fn write_entry(&self, key: &CacheKey, entry: &CacheEntry) -> Result<u64> {
+    /// Write a cache entry to disk using pre-serialized metadata bytes.
+    async fn write_entry(
+        &self,
+        key: &CacheKey,
+        entry: &CacheEntry,
+        meta_json: &[u8],
+    ) -> Result<u64> {
         let base_path = key.file_path(&self.cache_dir);
 
         // Create parent directories
@@ -181,19 +215,8 @@ impl DiskCache {
         let data_path = base_path.with_extension("data");
 
         // Write metadata
-        let metadata = DiskCacheMetadata {
-            headers: entry.headers.clone(),
-            status: entry.status,
-            timestamp: entry.timestamp,
-            ttl_seconds: entry.ttl_seconds,
-            data_size: entry.data.len(),
-        };
-
-        let meta_json = serde_json::to_vec(&metadata)
-            .map_err(|e| ProxyError::Cache(format!("Failed to serialize metadata: {}", e)))?;
-
         let mut meta_file = fs::File::create(&meta_path).await?;
-        meta_file.write_all(&meta_json).await?;
+        meta_file.write_all(meta_json).await?;
         meta_file.flush().await?;
 
         // Write data
@@ -249,8 +272,16 @@ impl DiskCache {
         let meta_path = base_path.with_extension("meta");
         let data_path = base_path.with_extension("data");
 
-        let meta_size = fs::metadata(&meta_path).await.ok().map(|m| m.len()).unwrap_or(0);
-        let data_size = fs::metadata(&data_path).await.ok().map(|m| m.len()).unwrap_or(0);
+        let meta_size = fs::metadata(&meta_path)
+            .await
+            .ok()
+            .map(|m| m.len())
+            .unwrap_or(0);
+        let data_size = fs::metadata(&data_path)
+            .await
+            .ok()
+            .map(|m| m.len())
+            .unwrap_or(0);
 
         let _ = fs::remove_file(&meta_path).await;
         let _ = fs::remove_file(&data_path).await;
@@ -266,7 +297,16 @@ impl DiskCache {
         // Serialize writes to prevent TOCTOU races in evict_if_needed
         let _guard = self.write_mutex.lock().await;
 
-        let entry_size = entry.size() as u64;
+        // Serialize metadata once — used for both eviction size estimate and disk write
+        let meta_json = serde_json::to_vec(&DiskCacheMetadata {
+            headers: entry.headers.clone(),
+            status: entry.status,
+            timestamp: entry.timestamp,
+            ttl_seconds: entry.ttl_seconds,
+            data_size: entry.data.len(),
+        })
+        .map_err(|e| ProxyError::Cache(format!("Failed to serialize metadata: {}", e)))?;
+        let entry_size = meta_json.len() as u64 + entry.data.len() as u64;
 
         // Evict if needed
         self.evict_if_needed(entry_size).await?;
@@ -277,26 +317,32 @@ impl DiskCache {
 
         // Remove any stale ghost entries from eviction order before adding the new one
         if old_size > 0 {
-            self.eviction_order.write().retain(|(h, _)| *h != key_hex);
+            self.eviction_order.write().retain(|h| *h != key_hex);
         }
 
-        // Write the new entry
-        let new_size = self.write_entry(&key, &entry).await?;
+        // Write the new entry (reuses pre-serialized metadata)
+        let new_size = self.write_entry(&key, &entry, &meta_json).await?;
 
         // Update size tracking
         let mut current_size = self.current_size.write();
         *current_size = current_size.saturating_sub(old_size) + new_size;
 
         // Track in eviction order
-        self.eviction_order.write().push_back((key_hex, new_size));
+        self.eviction_order.write().push_back(key_hex);
 
-        tracing::debug!("Cached entry on disk: {} bytes, total: {}/{}",
-                       new_size, *current_size, self.max_size);
+        tracing::debug!(
+            "Cached entry on disk: {} bytes, total: {}/{}",
+            new_size,
+            *current_size,
+            self.max_size
+        );
 
         Ok(())
     }
 
     pub async fn remove(&self, key: &CacheKey) -> Result<()> {
+        // Acquire write_mutex to prevent racing with put()/evict_if_needed()
+        let _guard = self.write_mutex.lock().await;
         let removed_size = self.remove_entry(key).await.unwrap_or(0);
         let key_hex = key.hash_hex();
 
@@ -304,11 +350,10 @@ impl DiskCache {
         *current_size = current_size.saturating_sub(removed_size);
 
         // Remove from eviction order to prevent ghost entries causing over-eviction
-        self.eviction_order.write().retain(|(h, _)| *h != key_hex);
+        self.eviction_order.write().retain(|h| *h != key_hex);
 
         Ok(())
     }
-
 }
 
 #[cfg(test)]
@@ -402,10 +447,15 @@ mod tests {
         cache.put(key.clone(), create_entry(2048)).await.unwrap();
 
         // Eviction order should have exactly 1 entry for this key, not 2
-        let order = cache.eviction_order.read();
-        let count = order.iter().filter(|(h, _)| *h == key.hash_hex()).count();
-        assert_eq!(count, 1, "Expected 1 eviction entry, got {} (ghost entry present)", count);
-        drop(order);
+        {
+            let order = cache.eviction_order.read();
+            let count = order.iter().filter(|h| *h == &key.hash_hex()).count();
+            assert_eq!(
+                count, 1,
+                "Expected 1 eviction entry, got {} (ghost entry present)",
+                count
+            );
+        }
 
         // The entry should still be retrievable
         let retrieved = cache.get(&key).await.unwrap();
@@ -431,11 +481,17 @@ mod tests {
         cache.put(key_a.clone(), create_entry(1024)).await.unwrap();
 
         // Write B large enough to trigger eviction
-        cache.put(key_b.clone(), create_entry(6 * 1024)).await.unwrap();
+        cache
+            .put(key_b.clone(), create_entry(6 * 1024))
+            .await
+            .unwrap();
 
         // A should still be retrievable (eviction should not have destroyed it via ghost)
         let retrieved_a = cache.get(&key_a).await.unwrap();
-        assert!(retrieved_a.is_some(), "Overwritten entry A was destroyed by eviction via ghost entry");
+        assert!(
+            retrieved_a.is_some(),
+            "Overwritten entry A was destroyed by eviction via ghost entry"
+        );
     }
 
     #[test]

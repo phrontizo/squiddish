@@ -39,9 +39,16 @@ struct DownloadState {
 /// Result of an atomic join-or-start operation on an in-flight download.
 pub enum DownloadAction {
     /// Joined an existing download: (broadcast receiver, accumulated chunks, meta receiver)
-    Joined(broadcast::Receiver<DownloadChunk>, Vec<Bytes>, watch::Receiver<Option<ResponseMetaResult>>),
+    Joined(
+        broadcast::Receiver<DownloadChunk>,
+        Vec<Bytes>,
+        watch::Receiver<Option<ResponseMetaResult>>,
+    ),
     /// Started a new download: (broadcast sender, meta receiver)
-    Started(broadcast::Sender<DownloadChunk>, watch::Receiver<Option<ResponseMetaResult>>),
+    Started(
+        broadcast::Sender<DownloadChunk>,
+        watch::Receiver<Option<ResponseMetaResult>>,
+    ),
 }
 
 impl Default for InflightDownloads {
@@ -71,7 +78,11 @@ impl InflightDownloads {
             let receiver = state.sender.subscribe();
             let accumulated = state.accumulated.read().clone();
             let meta_rx = state.meta_tx.subscribe();
-            tracing::debug!("Joining existing download for {}, already have {} chunks", key_str, accumulated.len());
+            tracing::debug!(
+                "Joining existing download for {}, already have {} chunks",
+                key_str,
+                accumulated.len()
+            );
             DownloadAction::Joined(receiver, accumulated, meta_rx)
         } else {
             let (sender, _) = broadcast::channel(1000);
@@ -90,7 +101,15 @@ impl InflightDownloads {
     /// Check if a download is in progress and subscribe to it.
     /// Superseded by `join_or_start_download` in production; retained for tests.
     #[cfg(test)]
-    pub fn join_download(&self, key: &CacheKey) -> Option<(broadcast::Receiver<DownloadChunk>, Vec<Bytes>, watch::Receiver<Option<ResponseMetaResult>>)> {
+    #[allow(clippy::type_complexity)]
+    pub fn join_download(
+        &self,
+        key: &CacheKey,
+    ) -> Option<(
+        broadcast::Receiver<DownloadChunk>,
+        Vec<Bytes>,
+        watch::Receiver<Option<ResponseMetaResult>>,
+    )> {
         let key_str = key.hash_hex();
         let downloads = self.downloads.write();
 
@@ -98,7 +117,11 @@ impl InflightDownloads {
             let receiver = state.sender.subscribe();
             let accumulated = state.accumulated.read().clone();
             let meta_rx = state.meta_tx.subscribe();
-            tracing::debug!("Joining existing download for {}, already have {} chunks", key_str, accumulated.len());
+            tracing::debug!(
+                "Joining existing download for {}, already have {} chunks",
+                key_str,
+                accumulated.len()
+            );
             Some((receiver, accumulated, meta_rx))
         } else {
             None
@@ -108,7 +131,13 @@ impl InflightDownloads {
     /// Register a new download and get a sender to broadcast chunks.
     /// Superseded by `join_or_start_download` in production; retained for tests.
     #[cfg(test)]
-    pub fn start_download(&self, key: &CacheKey) -> (broadcast::Sender<DownloadChunk>, watch::Receiver<Option<ResponseMetaResult>>) {
+    pub fn start_download(
+        &self,
+        key: &CacheKey,
+    ) -> (
+        broadcast::Sender<DownloadChunk>,
+        watch::Receiver<Option<ResponseMetaResult>>,
+    ) {
         let key_str = key.hash_hex();
         let mut downloads = self.downloads.write();
 
@@ -222,20 +251,32 @@ mod tests {
         assert!(joiner_meta_rx.borrow().is_none());
 
         // Set response metadata
-        inflight.set_response_meta(&key, ResponseMeta {
-            status: 200,
-            headers: vec![
-                ("content-type".to_string(), "application/octet-stream".to_string()),
-                ("x-custom".to_string(), "value".to_string()),
-            ],
-        });
+        inflight.set_response_meta(
+            &key,
+            ResponseMeta {
+                status: 200,
+                headers: vec![
+                    (
+                        "content-type".to_string(),
+                        "application/octet-stream".to_string(),
+                    ),
+                    ("x-custom".to_string(), "value".to_string()),
+                ],
+            },
+        );
 
         // Joiner should now see the metadata
         joiner_meta_rx.changed().await.unwrap();
         let meta = joiner_meta_rx.borrow().clone().unwrap().unwrap();
         assert_eq!(meta.status, 200);
         assert_eq!(meta.headers.len(), 2);
-        assert_eq!(meta.headers[0], ("content-type".to_string(), "application/octet-stream".to_string()));
+        assert_eq!(
+            meta.headers[0],
+            (
+                "content-type".to_string(),
+                "application/octet-stream".to_string()
+            )
+        );
     }
 
     #[tokio::test]

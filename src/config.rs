@@ -26,9 +26,13 @@ fn parse_size(s: &str) -> Option<u64> {
         return None;
     };
 
-    // Parse the numeric part (supports decimals)
+    // Parse the numeric part (supports decimals, rejects negative/infinite values)
     if let Ok(num) = num_str.trim().parse::<f64>() {
-        Some((num * unit as f64) as u64)
+        if num >= 0.0 && num.is_finite() {
+            Some((num * unit as f64) as u64)
+        } else {
+            None
+        }
     } else {
         None
     }
@@ -138,7 +142,7 @@ impl Default for Config {
 impl Default for CacheConfig {
     fn default() -> Self {
         Self {
-            memory_size: 1024 * 1024 * 1024, // 1GB
+            memory_size: 1024 * 1024 * 1024,     // 1GB
             disk_size: 100 * 1024 * 1024 * 1024, // 100GB
             cache_dir: PathBuf::from("./cache"),
             ttl_seconds: 7 * 24 * 60 * 60, // 7 days
@@ -150,9 +154,9 @@ impl Default for AptConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            list_ttl_seconds: 60 * 60, // 1 hour
+            list_ttl_seconds: 60 * 60,              // 1 hour
             package_ttl_seconds: 30 * 24 * 60 * 60, // 30 days
-            other_ttl_seconds: 24 * 60 * 60, // 1 day
+            other_ttl_seconds: 24 * 60 * 60,        // 1 day
         }
     }
 }
@@ -184,7 +188,8 @@ impl Config {
 
         // Bind address
         if let Some(addr) = get_var("SQUIDDISH_BIND_ADDR") {
-            config.bind_addr = addr.parse()
+            config.bind_addr = addr
+                .parse()
                 .map_err(|e| format!("Invalid SQUIDDISH_BIND_ADDR '{}': {}", addr, e))?;
         }
 
@@ -204,13 +209,18 @@ impl Config {
         }
 
         if let Some(ttl) = get_var("SQUIDDISH_TTL") {
-            config.cache.ttl_seconds = parse_duration(&ttl)
-                .ok_or_else(|| format!("Invalid SQUIDDISH_TTL '{}': expected number with optional unit (s, m, h, d)", ttl))?;
+            config.cache.ttl_seconds = parse_duration(&ttl).ok_or_else(|| {
+                format!(
+                    "Invalid SQUIDDISH_TTL '{}': expected number with optional unit (s, m, h, d)",
+                    ttl
+                )
+            })?;
         }
 
         // APT config
         if let Some(enabled) = get_var("SQUIDDISH_APT_ENABLED") {
-            config.apt.enabled = enabled.parse()
+            config.apt.enabled = enabled
+                .parse()
                 .map_err(|e| format!("Invalid SQUIDDISH_APT_ENABLED '{}': {}", enabled, e))?;
         }
 
@@ -236,7 +246,8 @@ impl Config {
         }
 
         if let Some(conns) = get_var("SQUIDDISH_MAX_CONNECTIONS") {
-            config.security.max_connections = conns.parse()
+            config.security.max_connections = conns
+                .parse()
                 .map_err(|e| format!("Invalid SQUIDDISH_MAX_CONNECTIONS '{}': {}", conns, e))?;
         }
 
@@ -246,7 +257,8 @@ impl Config {
         }
 
         if let Some(strict) = get_var("SQUIDDISH_STRICT_HTTPS") {
-            config.security.strict_https = strict.parse()
+            config.security.strict_https = strict
+                .parse()
                 .map_err(|e| format!("Invalid SQUIDDISH_STRICT_HTTPS '{}': {}", strict, e))?;
         }
 
@@ -267,6 +279,15 @@ impl Config {
         }
 
         // Validate that critical parameters are not zero
+        if config.cache.memory_size == 0 {
+            return Err("SQUIDDISH_MEMORY_SIZE must be greater than 0".to_string());
+        }
+        if config.cache.disk_size == 0 {
+            return Err("SQUIDDISH_DISK_SIZE must be greater than 0".to_string());
+        }
+        if config.security.max_body_size == 0 {
+            return Err("SQUIDDISH_MAX_BODY_SIZE must be greater than 0".to_string());
+        }
         if config.security.max_connections == 0 {
             return Err("SQUIDDISH_MAX_CONNECTIONS must be greater than 0".to_string());
         }
@@ -298,7 +319,8 @@ mod tests {
             "SQUIDDISH_MEMORY_SIZE" => Some("2GB".to_string()),
             "SQUIDDISH_STRICT_HTTPS" => Some("false".to_string()),
             _ => None,
-        }).unwrap();
+        })
+        .unwrap();
 
         assert_eq!(config.bind_addr.port(), 8080);
         assert_eq!(config.cache.memory_size, 2 * 1024 * 1024 * 1024);
@@ -361,10 +383,38 @@ mod tests {
         assert_eq!(parse_size("1KB"), Some(1024));
         assert_eq!(parse_size("1MB"), Some(1024 * 1024));
         assert_eq!(parse_size("1GB"), Some(1024 * 1024 * 1024));
-        assert_eq!(parse_size("2.5GB"), Some((2.5 * 1024.0 * 1024.0 * 1024.0) as u64));
+        assert_eq!(
+            parse_size("2.5GB"),
+            Some((2.5 * 1024.0 * 1024.0 * 1024.0) as u64)
+        );
         assert_eq!(parse_size("1TB"), Some(1024u64 * 1024 * 1024 * 1024));
         assert_eq!(parse_size("100mb"), Some(100 * 1024 * 1024)); // case insensitive
         assert_eq!(parse_size("invalid"), None);
+        // Negative and infinite values should be rejected
+        assert_eq!(parse_size("-1GB"), None);
+        assert_eq!(parse_size("-100MB"), None);
+        assert_eq!(parse_size("infGB"), None);
+        assert_eq!(parse_size("infinityMB"), None);
+    }
+
+    #[test]
+    fn test_from_vars_zero_memory_size() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_MEMORY_SIZE" => Some("0".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("greater than 0"));
+    }
+
+    #[test]
+    fn test_from_vars_zero_disk_size() {
+        let result = Config::from_vars(|key| match key {
+            "SQUIDDISH_DISK_SIZE" => Some("0".to_string()),
+            _ => None,
+        });
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("greater than 0"));
     }
 
     #[test]

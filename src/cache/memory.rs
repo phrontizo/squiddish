@@ -28,7 +28,6 @@ impl MemoryCache {
     pub async fn remove(&self, key: &CacheKey) {
         self.cache.invalidate(key).await;
     }
-
 }
 
 #[cfg(test)]
@@ -77,10 +76,20 @@ mod tests {
         // at most 2 entries can fit. Moka uses TinyLFU so we can't
         // predict which entry gets evicted, but total count must be <= 2.
         let mut count = 0;
-        if cache.get(&key1).await.is_some() { count += 1; }
-        if cache.get(&key2).await.is_some() { count += 1; }
-        if cache.get(&key3).await.is_some() { count += 1; }
-        assert!(count <= 2, "Expected at most 2 entries to fit, got {}", count);
+        if cache.get(&key1).await.is_some() {
+            count += 1;
+        }
+        if cache.get(&key2).await.is_some() {
+            count += 1;
+        }
+        if cache.get(&key3).await.is_some() {
+            count += 1;
+        }
+        assert!(
+            count <= 2,
+            "Expected at most 2 entries to fit, got {}",
+            count
+        );
     }
 
     #[tokio::test]
@@ -93,7 +102,10 @@ mod tests {
         // moka accepts then evicts oversized entries asynchronously
         cache.cache.run_pending_tasks().await;
         // Entry should not remain in cache since it exceeds capacity
-        assert!(cache.get(&key).await.is_none(), "Oversized entry should be evicted");
+        assert!(
+            cache.get(&key).await.is_none(),
+            "Oversized entry should be evicted"
+        );
     }
 
     #[tokio::test]

@@ -26,11 +26,14 @@ RUN RUST_TARGET="$(xx-info march)-unknown-linux-musl" && \
     echo "$RUST_TARGET" > /tmp/rust-target && \
     rustup target add "$RUST_TARGET"
 
-# Configure cargo to use xx-clang as the C compiler and linker for both targets.
-# Only the matching target's settings are used; the other is ignored.
-ENV CC=xx-clang \
-    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang
+# Configure cargo to use xx-clang for cross-compilation.
+# IMPORTANT: Set CC per-target only (not global CC=xx-clang), because
+# Cargo build scripts must compile for the HOST using the native compiler.
+# Global CC would make build scripts target the wrong architecture.
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang \
+    CC_aarch64_unknown_linux_musl=xx-clang \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang \
+    CC_x86_64_unknown_linux_musl=xx-clang
 
 # Copy manifests and lock file for reproducible, cacheable dependency builds
 COPY Cargo.toml Cargo.lock ./

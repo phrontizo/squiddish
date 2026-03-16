@@ -1,31 +1,41 @@
 # Multi-stage build for Squiddish caching proxy
-# Uses musl for static linking to create a minimal scratch-based image
-# Supports multi-arch: linux/amd64, linux/arm64
-# Uses native compilation on each platform (no cross-compilation)
+# Uses cross-compilation via xx (no QEMU emulation) for fast multi-arch builds
+# Supports: linux/amd64, linux/arm64
+#
+# Build: docker buildx build --platform linux/amd64,linux/arm64 -t squiddish .
 
-FROM rust:1.85-alpine AS builder
+# xx provides cross-compilation helpers (maintained by Docker Inc)
+FROM --platform=$BUILDPLATFORM tonistiigi/xx:1.6.1 AS xx
+
+FROM --platform=$BUILDPLATFORM rust:1.85-alpine AS builder
+COPY --from=xx / /
 
 ARG TARGETPLATFORM
 
 WORKDIR /build
 
-# Install musl build tools for static linking
-RUN apk add --no-cache musl-dev
+# Install cross-compilation toolchain:
+# - clang/lld: natively cross-compile (no QEMU needed)
+# - musl-dev: native headers for build scripts
+# - xx-apk: installs target-arch musl headers into the correct sysroot
+RUN apk add --no-cache clang lld musl-dev && \
+    xx-apk add --no-cache musl-dev
 
-# Determine the Rust target based on current architecture (not TARGETPLATFORM)
-# This works because buildx runs native builds on each platform
-RUN case "$(uname -m)" in \
-    "x86_64") echo "x86_64-unknown-linux-musl" > /tmp/rust-target ;; \
-    "aarch64") echo "aarch64-unknown-linux-musl" > /tmp/rust-target ;; \
-    *) echo "Unsupported architecture: $(uname -m)" && exit 1 ;; \
-    esac && \
-    export RUST_TARGET=$(cat /tmp/rust-target) && \
-    rustup target add $RUST_TARGET
+# Determine Rust target triple and add it
+RUN RUST_TARGET="$(xx-info march)-unknown-linux-musl" && \
+    echo "$RUST_TARGET" > /tmp/rust-target && \
+    rustup target add "$RUST_TARGET"
 
-# Copy manifests and lock file for reproducible builds
+# Configure cargo to use xx-clang as the C compiler and linker for both targets.
+# Only the matching target's settings are used; the other is ignored.
+ENV CC=xx-clang \
+    CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang \
+    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang
+
+# Copy manifests and lock file for reproducible, cacheable dependency builds
 COPY Cargo.toml Cargo.lock ./
 
-# Create dummy src files to build dependencies (both lib.rs and main.rs needed)
+# Build dependencies only (Docker layer cache — rebuilds only when Cargo.toml/lock change)
 RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
     mkdir src && \
     echo "fn main() {}" > src/main.rs && \
@@ -37,10 +47,11 @@ RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
 COPY src ./src
 COPY tests ./tests
 
-# Build the actual binary with static linking
+# Build the actual binary and verify it targets the correct platform
 RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
     touch src/main.rs src/lib.rs && \
     cargo build --release --target $RUST_TARGET && \
+    xx-verify target/$RUST_TARGET/release/squiddish && \
     cp target/$RUST_TARGET/release/squiddish /build/squiddish
 
 # Runtime stage - from scratch for minimal image

@@ -2,6 +2,9 @@
 name = "squiddish"
 version = "0.1.0"
 edition = "2021"
+license = "MIT"
+description = "High-performance HTTP caching proxy optimized for APT package managers"
+repository = "https://github.com/phrontizo/squiddish"
 
 [dependencies]
 tokio = { version = "1.42", features = ["full"] }

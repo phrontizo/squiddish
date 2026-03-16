@@ -26,20 +26,31 @@ RUN RUST_TARGET="$(xx-info march)-unknown-linux-musl" && \
     echo "$RUST_TARGET" > /tmp/rust-target && \
     rustup target add "$RUST_TARGET"
 
-# Configure cargo to use xx-clang for cross-compilation.
-# IMPORTANT: Set CC per-target only (not global CC=xx-clang), because
-# Cargo build scripts must compile for the HOST using the native compiler.
-# Global CC would make build scripts target the wrong architecture.
-ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang \
-    CC_aarch64_unknown_linux_musl=xx-clang \
-    CARGO_TARGET_X86_64_UNKNOWN_LINUX_MUSL_LINKER=xx-clang \
-    CC_x86_64_unknown_linux_musl=xx-clang
+# Configure cross-compilation linker and CC ONLY when cross-compiling.
+# Build scripts must compile for the HOST using the native linker/CC.
+# Setting these for the host triple would break build script compilation.
+RUN RUST_TARGET=$(cat /tmp/rust-target) && \
+    HOST_ARCH=$(uname -m) && \
+    TARGET_ARCH=$(echo $RUST_TARGET | cut -d- -f1) && \
+    mkdir -p .cargo && \
+    if [ "$HOST_ARCH" != "$TARGET_ARCH" ]; then \
+        printf '[target.%s]\nlinker = "xx-clang"\n' "$RUST_TARGET" > .cargo/config.toml && \
+        echo "xx-clang" > /tmp/target-cc; \
+    else \
+        touch .cargo/config.toml && \
+        echo "" > /tmp/target-cc; \
+    fi
 
 # Copy manifests and lock file for reproducible, cacheable dependency builds
 COPY Cargo.toml Cargo.lock ./
 
 # Build dependencies only (Docker layer cache — rebuilds only when Cargo.toml/lock change)
-RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
+RUN RUST_TARGET=$(cat /tmp/rust-target) && \
+    TARGET_CC=$(cat /tmp/target-cc) && \
+    if [ -n "$TARGET_CC" ]; then \
+        CC_VAR="CC_$(echo $RUST_TARGET | tr '-' '_')"; \
+        export "$CC_VAR=$TARGET_CC"; \
+    fi && \
     mkdir src && \
     echo "fn main() {}" > src/main.rs && \
     touch src/lib.rs && \
@@ -51,7 +62,12 @@ COPY src ./src
 COPY tests ./tests
 
 # Build the actual binary and verify it targets the correct platform
-RUN export RUST_TARGET=$(cat /tmp/rust-target) && \
+RUN RUST_TARGET=$(cat /tmp/rust-target) && \
+    TARGET_CC=$(cat /tmp/target-cc) && \
+    if [ -n "$TARGET_CC" ]; then \
+        CC_VAR="CC_$(echo $RUST_TARGET | tr '-' '_')"; \
+        export "$CC_VAR=$TARGET_CC"; \
+    fi && \
     touch src/main.rs src/lib.rs && \
     cargo build --release --target $RUST_TARGET && \
     xx-verify target/$RUST_TARGET/release/squiddish && \

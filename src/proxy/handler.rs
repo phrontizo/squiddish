@@ -293,8 +293,7 @@ impl ProxyHandler {
 
             // Forward the request
             let result =
-                Self::fetch_and_stream(client, req, &sender, &cache, &cache_key, config.clone())
-                    .await;
+                Self::fetch_and_stream(client, req, &cache, &cache_key, config.clone()).await;
 
             match result {
                 Ok(_) => {
@@ -335,7 +334,6 @@ impl ProxyHandler {
     async fn fetch_and_stream(
         client: HttpClient,
         req: Request<Incoming>,
-        sender: &tokio::sync::broadcast::Sender<DownloadChunk>,
         cache: &Arc<TieredCache>,
         cache_key: &CacheKey,
         config: Arc<Config>,
@@ -424,11 +422,8 @@ impl ProxyHandler {
                     cache_buf.extend_from_slice(&bytes);
                 }
 
-                // Add to inflight tracking for late joiners
-                cache.inflight().add_chunk(cache_key, bytes.clone());
-
-                // Broadcast to all listeners
-                let _ = sender.send(DownloadChunk::Data(bytes));
+                // Add to inflight tracking and broadcast to all listeners
+                cache.inflight().add_chunk(cache_key, bytes);
             }
         }
 

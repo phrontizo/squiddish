@@ -124,7 +124,7 @@ APT requests are automatically detected and given optimized TTL values:
 Squiddish respects standard HTTP caching semantics:
 
 - **`Cache-Control: s-maxage`** takes precedence over `max-age` (RFC 7234 shared cache behavior)
-- **`Cache-Control: no-store`, `no-cache`, `private`** bypass caching entirely
+- **`Cache-Control: no-store`, `no-cache`, `private`** bypass caching entirely (`no-cache` is treated as `no-store` since conditional requests are not supported)
 - **`Pragma: no-cache`** respected for HTTP/1.0 compatibility
 - **`Expires`** header used as fallback when no `Cache-Control` is present
 - **Non-2xx responses** are never cached

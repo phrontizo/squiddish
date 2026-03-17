@@ -140,6 +140,10 @@ impl DiskCache {
         let mut freed = 0u64;
 
         loop {
+            if current_size.saturating_sub(freed) <= target_size {
+                break;
+            }
+
             let entry = {
                 let mut order = self.eviction_order.write();
                 order.pop_front()
@@ -148,12 +152,6 @@ impl DiskCache {
             let Some(hash_hex) = entry else {
                 break;
             };
-
-            if current_size.saturating_sub(freed) <= target_size {
-                // Put it back, we've freed enough
-                self.eviction_order.write().push_front(hash_hex);
-                break;
-            }
 
             // Construct file paths from hash_hex
             let shard = &hash_hex[0..2.min(hash_hex.len())];

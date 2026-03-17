@@ -322,8 +322,8 @@ impl ProxyHandler {
         // Copy headers (excluding hop-by-hop headers)
         *new_req.headers_mut() = filter_headers(headers);
 
-        // Add Via header
-        new_req.headers_mut().insert(
+        // RFC 7230 §5.7.1: proxies MUST append (not replace) Via header
+        new_req.headers_mut().append(
             "via",
             hyper::header::HeaderValue::from_static("1.1 squiddish"),
         );
@@ -503,8 +503,8 @@ impl ProxyHandler {
         // Copy headers (excluding hop-by-hop headers)
         *new_req.headers_mut() = filter_headers(headers);
 
-        // Add Via header
-        new_req.headers_mut().insert(
+        // RFC 7230 §5.7.1: proxies MUST append (not replace) Via header
+        new_req.headers_mut().append(
             "via",
             hyper::header::HeaderValue::from_static("1.1 squiddish"),
         );

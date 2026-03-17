@@ -15,6 +15,19 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::SystemTime;
 
+/// RAII guard that calls `complete_download` on drop, ensuring cleanup
+/// even if the background download task panics.
+struct InflightGuard {
+    cache: Arc<TieredCache>,
+    key: CacheKey,
+}
+
+impl Drop for InflightGuard {
+    fn drop(&mut self) {
+        self.cache.inflight().complete_download(&self.key);
+    }
+}
+
 #[derive(Clone)]
 pub struct ProxyHandler {
     cache: Arc<TieredCache>,
@@ -250,6 +263,12 @@ impl ProxyHandler {
 
         // Spawn background task to fetch and broadcast
         tokio::spawn(async move {
+            // Guard ensures complete_download is called even if the task panics
+            let _guard = InflightGuard {
+                cache: cache.clone(),
+                key: cache_key.clone(),
+            };
+
             // Forward the request
             let result =
                 Self::fetch_and_stream(client, req, &sender, &cache, &cache_key, config.clone())
@@ -269,9 +288,6 @@ impl ProxyHandler {
                     let _ = sender.send(DownloadChunk::Error(e.to_string()));
                 }
             }
-
-            // Mark download as complete
-            cache.inflight().complete_download(&cache_key);
         });
 
         // Wait for response metadata (status + headers) from the background task

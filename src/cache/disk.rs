@@ -8,6 +8,14 @@ use std::time::SystemTime;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
+/// Construct a cache file base path from a hash hex string.
+/// Uses the same 2-level sharding as `CacheKey::file_path`: base_dir/XX/YY/hash.
+fn file_path_from_hash(base_dir: &std::path::Path, hash_hex: &str) -> PathBuf {
+    let shard = &hash_hex[0..2];
+    let subshard = &hash_hex[2..4];
+    base_dir.join(shard).join(subshard).join(hash_hex)
+}
+
 /// On-disk cache entry metadata. Uses `#[serde(default)]` so that new fields
 /// added in future versions won't break deserialization of existing cache files.
 #[derive(Debug, serde::Serialize, serde::Deserialize)]
@@ -153,19 +161,9 @@ impl DiskCache {
                 break;
             };
 
-            // Construct file paths from hash_hex
-            let shard = &hash_hex[0..2.min(hash_hex.len())];
-            let subshard = if hash_hex.len() >= 4 {
-                &hash_hex[2..4]
-            } else {
-                ""
-            };
-            let meta_path = self
-                .cache_dir
-                .join(shard)
-                .join(subshard)
-                .join(format!("{}.meta", hash_hex));
-            let data_path = meta_path.with_extension("data");
+            let base_path = file_path_from_hash(&self.cache_dir, &hash_hex);
+            let meta_path = base_path.with_extension("meta");
+            let data_path = base_path.with_extension("data");
 
             // Get actual file sizes
             let meta_size = fs::metadata(&meta_path)
@@ -306,6 +304,17 @@ impl DiskCache {
         })
         .map_err(|e| ProxyError::Cache(format!("Failed to serialize metadata: {}", e)))?;
         let entry_size = meta_json.len() as u64 + entry.data.len() as u64;
+
+        // Reject entries that exceed the entire cache capacity — writing them would
+        // evict everything and then immediately exceed max_size with no recourse.
+        if entry_size > self.max_size {
+            tracing::debug!(
+                "Entry too large for disk cache ({} > {}), skipping",
+                entry_size,
+                self.max_size
+            );
+            return Ok(());
+        }
 
         // Evict if needed
         self.evict_if_needed(entry_size).await?;

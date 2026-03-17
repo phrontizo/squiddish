@@ -261,7 +261,7 @@ Client Request
 
 ## Performance Characteristics
 
-- **Memory-efficient streaming**: No full response buffering during downloads
+- **Memory-efficient streaming**: Clients receive data as it arrives via broadcast; cacheable responses are also accumulated for storage
 - **Concurrent request deduplication**: N clients = 1 upstream request
 - **Lock-free memory cache reads**: moka uses concurrent data structures internally
 - **Async I/O**: Non-blocking throughout using Tokio

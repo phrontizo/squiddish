@@ -101,4 +101,5 @@ When making changes, ensure these files stay in sync with the codebase:
 - `README.md` — features, config options, project structure, architecture
 - `Dockerfile` — env var defaults, build steps
 - `compose.yml` — env var defaults and documentation
+- `.github/workflows/` — CI and Docker publish pipelines
 - `CLAUDE.md` — this file: architecture, conventions, module responsibilities

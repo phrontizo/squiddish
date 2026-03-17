@@ -214,20 +214,7 @@ impl ProxyHandler {
                     .unwrap();
 
                 let meta = meta_result.map_err(ProxyError::Network)?;
-
-                let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
-                    tracing::warn!(
-                        "Invalid upstream status code {}, falling back to 200",
-                        meta.status
-                    );
-                    StatusCode::OK
-                });
-                let mut builder = Response::builder().status(status);
-                for (name, value) in &meta.headers {
-                    builder = builder.header(name.as_str(), value.as_str());
-                }
-
-                Ok(builder.body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?)
+                build_streaming_response(meta, receiver, initial_chunks)
             }
             DownloadAction::Started(sender, meta_rx) => {
                 self.handle_streaming_download(req, cache_key, sender, meta_rx)
@@ -287,20 +274,7 @@ impl ProxyHandler {
             .unwrap();
 
         let meta = meta_result.map_err(ProxyError::Network)?;
-
-        let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
-            tracing::warn!(
-                "Invalid upstream status code {}, falling back to 200",
-                meta.status
-            );
-            StatusCode::OK
-        });
-        let mut builder = Response::builder().status(status);
-        for (name, value) in &meta.headers {
-            builder = builder.header(name.as_str(), value.as_str());
-        }
-
-        Ok(builder.body(Either::Right(StreamingBody::new(receiver, vec![])))?)
+        build_streaming_response(meta, receiver, vec![])
     }
 
     async fn handle_passthrough_request(
@@ -771,6 +745,26 @@ fn parse_connect_uri(uri: &Uri) -> Result<(String, u16)> {
         }
         None => Ok((host_port.to_string(), 443)),
     }
+}
+
+/// Build a streaming response from upstream metadata and a broadcast receiver.
+fn build_streaming_response(
+    meta: ResponseMeta,
+    receiver: tokio::sync::broadcast::Receiver<DownloadChunk>,
+    initial_chunks: Vec<Bytes>,
+) -> Result<Response<Either<Full<Bytes>, StreamingBody>>> {
+    let status = StatusCode::from_u16(meta.status).unwrap_or_else(|_| {
+        tracing::warn!(
+            "Invalid upstream status code {}, falling back to 200",
+            meta.status
+        );
+        StatusCode::OK
+    });
+    let mut builder = Response::builder().status(status);
+    for (name, value) in &meta.headers {
+        builder = builder.header(name.as_str(), value.as_str());
+    }
+    Ok(builder.body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?)
 }
 
 fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, StreamingBody>> {

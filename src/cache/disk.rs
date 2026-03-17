@@ -129,6 +129,7 @@ impl DiskCache {
     }
 
     async fn evict_if_needed(&self, needed_size: u64) -> Result<()> {
+        // Safe to snapshot: callers hold write_mutex, so no concurrent modifications
         let current_size = *self.current_size.read();
 
         if current_size + needed_size <= self.max_size {

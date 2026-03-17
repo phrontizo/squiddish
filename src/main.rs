@@ -1,5 +1,4 @@
-use anyhow::Result;
-use squiddish::{Config, ProxyServer};
+use squiddish::{Config, ProxyServer, Result};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
 #[tokio::main]

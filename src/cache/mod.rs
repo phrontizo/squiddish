@@ -98,9 +98,8 @@ impl TieredCache {
     }
 
     pub async fn put(&self, key: CacheKey, entry: CacheEntry) -> crate::error::Result<()> {
-        // Always write to disk for large items
+        // Large entries (>1MB) go to both memory and disk
         if entry.size() > 1024 * 1024 {
-            // > 1MB goes to disk
             self.disk.put(key.clone(), entry.clone()).await?;
         }
 

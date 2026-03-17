@@ -174,7 +174,11 @@ impl InflightDownloads {
         }
     }
 
-    /// Add a chunk to the accumulated data (for late joiners)
+    /// Add a chunk to the accumulated data (for late joiners).
+    /// Takes a read lock on `downloads`. This is safe with `join_or_start_download`
+    /// because parking_lot's write-priority fairness blocks new readers while a
+    /// writer is waiting, preventing chunks from arriving between subscribe and
+    /// accumulated read in `join_or_start_download`.
     pub fn add_chunk(&self, key: &CacheKey, chunk: Bytes) {
         let key_str = key.hash_hex();
         let downloads = self.downloads.read();

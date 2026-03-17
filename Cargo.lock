@@ -1269,7 +1269,6 @@ dependencies = [
 name = "squiddish"
 version = "1.0.0"
 dependencies = [
- "anyhow",
  "bytes",
  "futures",
  "hex",

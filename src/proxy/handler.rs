@@ -989,6 +989,52 @@ mod tests {
     }
 
     #[test]
+    fn test_zero_ttl_returns_none() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // max-age=0 should return None (entry would be immediately stale)
+        headers.insert("cache-control", "max-age=0".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+
+        // s-maxage=0 should also return None
+        headers.insert("cache-control", "s-maxage=0".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+
+        // s-maxage=0 with non-zero max-age: s-maxage takes precedence, returns None
+        headers.insert("cache-control", "max-age=300, s-maxage=0".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+    }
+
+    #[test]
+    fn test_expires_header_ttl() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // Expires in the future should return a positive TTL
+        let future = std::time::SystemTime::now() + std::time::Duration::from_secs(600);
+        headers.insert("expires", httpdate::fmt_http_date(future).parse().unwrap());
+        let ttl = ProxyHandler::parse_cache_control_headers(&headers);
+        assert!(ttl.is_some());
+        // Allow some tolerance for test execution time
+        let ttl_val = ttl.unwrap();
+        assert!(
+            (598..=601).contains(&ttl_val),
+            "Expected ~600, got {}",
+            ttl_val
+        );
+
+        // Expires in the past should return None
+        headers.insert("expires", "Thu, 01 Jan 1970 00:00:00 GMT".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+
+        // Cache-Control max-age takes precedence over Expires
+        headers.insert("cache-control", "max-age=120".parse().unwrap());
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(120)
+        );
+    }
+
+    #[test]
     fn test_filter_headers_removes_hop_by_hop() {
         let mut headers = hyper::HeaderMap::new();
         headers.insert("content-type", "text/html".parse().unwrap());

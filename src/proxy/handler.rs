@@ -672,10 +672,13 @@ fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool
     }
 
     // Check Pragma: no-cache (HTTP/1.0 compatibility)
+    // Use token-level matching to avoid false positives on values like "x-no-cache-ext"
     for pragma in headers.get_all("pragma") {
         if let Ok(value) = pragma.to_str() {
-            if value.contains("no-cache") {
-                return false;
+            for token in value.split(',') {
+                if token.trim().eq_ignore_ascii_case("no-cache") {
+                    return false;
+                }
             }
         }
     }
@@ -1067,6 +1070,20 @@ mod tests {
         headers.remove("pragma");
         headers.insert("pragma", "something-else".parse().unwrap());
         assert!(should_cache_response(StatusCode::OK, &headers));
+
+        // Pragma values containing "no-cache" as substring should NOT prevent caching
+        headers.insert("pragma", "x-no-cache-extension".parse().unwrap());
+        assert!(
+            should_cache_response(StatusCode::OK, &headers),
+            "Pragma substring match should not prevent caching"
+        );
+
+        // Pragma with multiple comma-separated tokens including no-cache
+        headers.insert("pragma", "x-custom, no-cache".parse().unwrap());
+        assert!(
+            !should_cache_response(StatusCode::OK, &headers),
+            "Pragma no-cache token in comma-separated list should prevent caching"
+        );
     }
 
     #[test]

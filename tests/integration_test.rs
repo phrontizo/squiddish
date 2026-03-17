@@ -109,7 +109,13 @@ async fn start_test_server() -> (SocketAddr, tokio::task::JoinHandle<()>) {
                                     .unwrap();
                                 return Ok::<_, Infallible>(response);
                             }
-                            _ => "Not found".to_string(),
+                            _ => {
+                                let response = Response::builder()
+                                    .status(StatusCode::NOT_FOUND)
+                                    .body(Full::new(Bytes::from("Not found")))
+                                    .unwrap();
+                                return Ok::<_, Infallible>(response);
+                            }
                         };
 
                         Ok::<_, Infallible>(Response::new(Full::new(Bytes::from(body))))

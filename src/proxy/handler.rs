@@ -98,12 +98,15 @@ impl ProxyHandler {
             }
         }
 
-        // Check blocked hosts (use same Host header fallback as allowed_hosts)
-        let blocked_host = req
-            .uri()
-            .host()
-            .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()));
-        if let Some(host) = blocked_host {
+        // Check blocked hosts — require a host to be extractable when blocking is configured,
+        // matching the allowed_hosts behavior to prevent bypass via missing host.
+        if !self.config.security.blocked_hosts.is_empty() {
+            let host = req
+                .uri()
+                .host()
+                .or_else(|| req.headers().get("host").and_then(|h| h.to_str().ok()))
+                .ok_or_else(|| ProxyError::ValidationFailed("Missing host".to_string()))?;
+
             for blocked in &self.config.security.blocked_hosts {
                 if host_matches(host, blocked) {
                     return Err(ProxyError::ValidationFailed(format!(
@@ -716,11 +719,12 @@ fn strip_host_port(host: &str) -> &str {
 /// Match a hostname against a pattern using exact match or subdomain suffix.
 /// Pattern "example.com" matches "example.com" and "sub.example.com"
 /// but NOT "evil-example.com". Strips port from host before matching.
+/// Comparison is case-insensitive per RFC 4343 (DNS Name Case Insensitivity).
 fn host_matches(host: &str, pattern: &str) -> bool {
     let host = strip_host_port(host);
-    host == pattern
+    host.eq_ignore_ascii_case(pattern)
         || (host.len() > pattern.len()
-            && host.ends_with(pattern)
+            && host[host.len() - pattern.len()..].eq_ignore_ascii_case(pattern)
             && host.as_bytes()[host.len() - pattern.len() - 1] == b'.')
 }
 
@@ -810,7 +814,21 @@ fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, 
 }
 
 fn filter_headers(mut headers: hyper::HeaderMap) -> hyper::HeaderMap {
-    // Remove hop-by-hop headers
+    // Per RFC 7230 Section 6.1: the Connection header can list additional
+    // hop-by-hop header names that must be removed before forwarding.
+    let extra_hop_by_hop: Vec<String> = headers
+        .get_all("connection")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(','))
+        .map(|name| name.trim().to_lowercase())
+        .collect();
+
+    for name in &extra_hop_by_hop {
+        headers.remove(name.as_str());
+    }
+
+    // Remove well-known hop-by-hop headers
     headers.remove("connection");
     headers.remove("keep-alive");
     headers.remove("proxy-authenticate");
@@ -906,6 +924,17 @@ mod tests {
         // Bracketed IPv6 from Host header
         assert!(host_matches("[::1]:8080", "::1"));
         assert!(host_matches("[2001:db8::1]:443", "2001:db8::1"));
+    }
+
+    #[test]
+    fn test_host_matches_case_insensitive() {
+        // RFC 4343: DNS names are case-insensitive
+        assert!(host_matches("Example.COM", "example.com"));
+        assert!(host_matches("example.com", "Example.COM"));
+        assert!(host_matches("SUB.EXAMPLE.COM", "example.com"));
+        assert!(host_matches("sub.Example.Com", "example.com"));
+        assert!(host_matches("Sub.Example.Com:8080", "example.com"));
+        assert!(!host_matches("evil-Example.COM", "example.com"));
     }
 
     #[test]
@@ -1122,6 +1151,31 @@ mod tests {
         // End-to-end headers should be preserved
         assert_eq!(filtered.get("content-type").unwrap(), "text/html");
         assert_eq!(filtered.get("x-custom").unwrap(), "preserved");
+    }
+
+    #[test]
+    fn test_filter_headers_connection_declared_hop_by_hop() {
+        // RFC 7230 Section 6.1: Connection header can declare additional hop-by-hop headers
+        let mut headers = hyper::HeaderMap::new();
+        headers.insert("content-type", "text/html".parse().unwrap());
+        headers.insert("connection", "X-Custom-Hop, X-Another".parse().unwrap());
+        headers.insert("x-custom-hop", "should-be-removed".parse().unwrap());
+        headers.insert("x-another", "also-removed".parse().unwrap());
+        headers.insert("x-normal", "preserved".parse().unwrap());
+
+        let filtered = filter_headers(headers);
+
+        assert!(filtered.get("connection").is_none());
+        assert!(
+            filtered.get("x-custom-hop").is_none(),
+            "Connection-declared hop-by-hop header should be removed"
+        );
+        assert!(
+            filtered.get("x-another").is_none(),
+            "Connection-declared hop-by-hop header should be removed"
+        );
+        assert_eq!(filtered.get("x-normal").unwrap(), "preserved");
+        assert_eq!(filtered.get("content-type").unwrap(), "text/html");
     }
 
     #[test]

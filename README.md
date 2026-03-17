@@ -18,7 +18,7 @@ packages. At some point, I'll probably implement MITM support for HTTPS, but at 
 - **APT-Aware Caching**: Intelligent TTL handling for Debian/Ubuntu packages
 - **HTTP/1.1 Support**: With connection keep-alive and header case preservation
 - **CONNECT Tunneling**: HTTPS passthrough without interception
-- **Graceful Shutdown**: Clean shutdown on SIGINT with in-flight request draining
+- **Graceful Shutdown**: Stops accepting new connections on SIGINT
 - **Connection Limiting**: Semaphore-based max concurrent connections
 - **Configurable via Environment Variables**: No config files required
 

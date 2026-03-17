@@ -48,6 +48,16 @@ docker run -d -p 3128:3128 -v ./cache:/cache squiddish
 The Docker image uses a multi-stage build with musl for static linking, producing a minimal scratch-based image.
 Supports multi-arch: `linux/amd64` and `linux/arm64`.
 
+### Docker Tags
+
+| Tag | Description |
+|-----|-------------|
+| `:latest` | Latest stable release |
+| `:edge` | Latest build from `master` (may be unstable) |
+| `:v1.2.3` | Specific version |
+| `:v1.2` | Latest patch for a minor version |
+| `:v1` | Latest minor/patch for a major version |
+
 ## Usage
 
 ```bash

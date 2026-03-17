@@ -107,7 +107,7 @@ APT requests are automatically detected and given optimized TTL values:
 
 | Variable   | Default | Description                                 |
 |------------|---------|---------------------------------------------|
-| `RUST_LOG` | `info`  | Log level (error, warn, info, debug, trace) |
+| `RUST_LOG` | `squiddish=info` | Log level filter (e.g., `debug`, `squiddish=debug`) |
 
 ## HTTP Headers
 

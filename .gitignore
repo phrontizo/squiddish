@@ -7,3 +7,5 @@ config.toml
 .DS_Store
 *.log
 .idea/
+.claude/
+.ralph-memory.md

@@ -87,9 +87,7 @@ pub async fn collect_body(mut body: Incoming, max_size: u64) -> Result<Bytes> {
         let frame = frame?;
         if let Some(chunk) = frame.data_ref() {
             if collected.len() as u64 + chunk.len() as u64 > max_size {
-                return Err(ProxyError::ValidationFailed(
-                    "Response body too large".to_string(),
-                ));
+                return Err(ProxyError::ValidationFailed("Body too large".to_string()));
             }
             collected.extend_from_slice(chunk);
         }

@@ -195,8 +195,14 @@ impl Config {
 
         // Cache config
         if let Some(size) = get_var("SQUIDDISH_MEMORY_SIZE") {
-            config.cache.memory_size = parse_size(&size)
-                .ok_or_else(|| format!("Invalid SQUIDDISH_MEMORY_SIZE '{}': expected number with optional unit (KB, MB, GB, TB)", size))? as usize;
+            let bytes = parse_size(&size)
+                .ok_or_else(|| format!("Invalid SQUIDDISH_MEMORY_SIZE '{}': expected number with optional unit (KB, MB, GB, TB)", size))?;
+            config.cache.memory_size = usize::try_from(bytes).map_err(|_| {
+                format!(
+                    "SQUIDDISH_MEMORY_SIZE '{}' exceeds platform address space",
+                    size
+                )
+            })?;
         }
 
         if let Some(size) = get_var("SQUIDDISH_DISK_SIZE") {

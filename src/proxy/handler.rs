@@ -426,11 +426,12 @@ impl ProxyHandler {
     }
 
     fn parse_cache_control_headers(headers: &hyper::HeaderMap) -> Option<u64> {
-        if let Some(cache_control) = headers.get("cache-control") {
-            if let Ok(value) = cache_control.to_str() {
-                let mut max_age = None;
-                let mut s_maxage = None;
+        let mut max_age = None;
+        let mut s_maxage = None;
 
+        // RFC 7230: multiple headers with the same name must all be processed
+        for cache_control in headers.get_all("cache-control") {
+            if let Ok(value) = cache_control.to_str() {
                 for directive in value.split(',') {
                     // RFC 7234: Cache directives are case-insensitive
                     let directive = directive.trim().to_ascii_lowercase();
@@ -444,16 +445,16 @@ impl ProxyHandler {
                         }
                     }
                 }
-
-                // s-maxage takes precedence over max-age for shared caches (RFC 7234)
-                // Return None for zero TTL — entry would be immediately stale, wasting I/O
-                if let Some(ttl) = s_maxage {
-                    return if ttl > 0 { Some(ttl) } else { None };
-                }
-                if let Some(ttl) = max_age {
-                    return if ttl > 0 { Some(ttl) } else { None };
-                }
             }
+        }
+
+        // s-maxage takes precedence over max-age for shared caches (RFC 7234)
+        // Return None for zero TTL — entry would be immediately stale, wasting I/O
+        if let Some(ttl) = s_maxage {
+            return if ttl > 0 { Some(ttl) } else { None };
+        }
+        if let Some(ttl) = max_age {
+            return if ttl > 0 { Some(ttl) } else { None };
         }
 
         // Check Expires header
@@ -634,15 +635,16 @@ impl ProxyHandler {
     }
 }
 
-/// Check if a response should be cached based on status and headers
+/// Check if a response should be cached based on status and headers.
+/// Uses `get_all()` per RFC 7230: multiple headers with the same name must all be processed.
 fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool {
     // Only cache successful responses
     if !status.is_success() {
         return false;
     }
 
-    // Check Cache-Control directives
-    if let Some(cc) = headers.get("cache-control") {
+    // Check Cache-Control directives (all header values)
+    for cc in headers.get_all("cache-control") {
         if let Ok(value) = cc.to_str() {
             for directive in value.split(',') {
                 let directive = directive.trim();
@@ -657,7 +659,7 @@ fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool
     }
 
     // Check Pragma: no-cache (HTTP/1.0 compatibility)
-    if let Some(pragma) = headers.get("pragma") {
+    for pragma in headers.get_all("pragma") {
         if let Ok(value) = pragma.to_str() {
             if value.contains("no-cache") {
                 return false;
@@ -669,7 +671,7 @@ fn should_cache_response(status: StatusCode, headers: &hyper::HeaderMap) -> bool
     // The cache key only includes Accept-Encoding; if the upstream varies on
     // Authorization, Cookie, or *, caching would serve one user's response
     // to another (cache poisoning / data leak).
-    if let Some(vary) = headers.get("vary") {
+    for vary in headers.get_all("vary") {
         if let Ok(value) = vary.to_str() {
             for field in value.split(',') {
                 let field = field.trim();
@@ -696,9 +698,18 @@ fn html_escape(s: &str) -> String {
 }
 
 /// Strip port from a host string (e.g., "example.com:8080" -> "example.com").
-/// Handles both plain hosts and hosts with ports. Does not handle IPv6 bracket notation
-/// since those come through uri.host() which already strips brackets.
+/// Handles IPv4/hostname with optional port, IPv6 bracket notation from Host headers
+/// (e.g., "[::1]:8080"), and bare IPv6 from uri.host() (e.g., "::1").
 fn strip_host_port(host: &str) -> &str {
+    // IPv6 in brackets (from Host header): [::1]:port or [::1]
+    if let Some(rest) = host.strip_prefix('[') {
+        return rest.split_once(']').map(|(addr, _)| addr).unwrap_or(rest);
+    }
+    // Bare IPv6 (from uri.host()): contains multiple colons, not host:port
+    if host.bytes().filter(|&b| b == b':').count() > 1 {
+        return host;
+    }
+    // IPv4 or hostname with optional port
     host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
 }
 
@@ -872,6 +883,32 @@ mod tests {
     }
 
     #[test]
+    fn test_strip_host_port_ipv6() {
+        // Bare IPv6 from uri.host() (brackets already stripped)
+        assert_eq!(strip_host_port("::1"), "::1");
+        assert_eq!(strip_host_port("2001:db8::1"), "2001:db8::1");
+        // IPv6 bracket notation from Host header
+        assert_eq!(strip_host_port("[::1]:8080"), "::1");
+        assert_eq!(strip_host_port("[::1]"), "::1");
+        assert_eq!(strip_host_port("[2001:db8::1]:443"), "2001:db8::1");
+        // Regular IPv4/hostname unchanged
+        assert_eq!(strip_host_port("example.com:8080"), "example.com");
+        assert_eq!(strip_host_port("example.com"), "example.com");
+        assert_eq!(strip_host_port("127.0.0.1:3128"), "127.0.0.1");
+    }
+
+    #[test]
+    fn test_host_matches_ipv6() {
+        // Bare IPv6 from uri.host()
+        assert!(host_matches("::1", "::1"));
+        assert!(host_matches("2001:db8::1", "2001:db8::1"));
+        assert!(!host_matches("::1", "::2"));
+        // Bracketed IPv6 from Host header
+        assert!(host_matches("[::1]:8080", "::1"));
+        assert!(host_matches("[2001:db8::1]:443", "2001:db8::1"));
+    }
+
+    #[test]
     fn test_should_cache_response() {
         let mut headers = hyper::HeaderMap::new();
         assert!(should_cache_response(StatusCode::OK, &headers));
@@ -898,6 +935,42 @@ mod tests {
         // Normal cacheable response
         headers.insert("cache-control", "public, max-age=3600".parse().unwrap());
         assert!(should_cache_response(StatusCode::OK, &headers));
+    }
+
+    #[test]
+    fn test_should_cache_response_multiple_headers() {
+        // RFC 7230: multiple headers with the same name must all be processed
+        let mut headers = hyper::HeaderMap::new();
+
+        // no-store in a second Cache-Control header must prevent caching
+        headers.append("cache-control", "public, max-age=3600".parse().unwrap());
+        headers.append("cache-control", "no-store".parse().unwrap());
+        assert!(
+            !should_cache_response(StatusCode::OK, &headers),
+            "no-store in second Cache-Control header should prevent caching"
+        );
+
+        // Vary: Authorization in a second Vary header must prevent caching
+        let mut headers = hyper::HeaderMap::new();
+        headers.append("vary", "Accept-Encoding".parse().unwrap());
+        headers.append("vary", "Authorization".parse().unwrap());
+        assert!(
+            !should_cache_response(StatusCode::OK, &headers),
+            "Authorization in second Vary header should prevent caching"
+        );
+    }
+
+    #[test]
+    fn test_parse_cache_control_multiple_headers() {
+        let mut headers = hyper::HeaderMap::new();
+
+        // s-maxage in a separate header should still be found
+        headers.append("cache-control", "public".parse().unwrap());
+        headers.append("cache-control", "s-maxage=600".parse().unwrap());
+        assert_eq!(
+            ProxyHandler::parse_cache_control_headers(&headers),
+            Some(600)
+        );
     }
 
     #[test]

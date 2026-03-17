@@ -34,6 +34,7 @@ pub struct ProxyHandler {
     config: Arc<Config>,
     client: HttpClient,
     peer_addr: SocketAddr,
+    semaphore: Arc<tokio::sync::Semaphore>,
 }
 
 impl ProxyHandler {
@@ -42,12 +43,14 @@ impl ProxyHandler {
         config: Arc<Config>,
         client: HttpClient,
         peer_addr: SocketAddr,
+        semaphore: Arc<tokio::sync::Semaphore>,
     ) -> Self {
         Self {
             cache,
             config,
             client,
             peer_addr,
+            semaphore,
         }
     }
 
@@ -88,6 +91,13 @@ impl ProxyHandler {
     }
 
     fn validate_request(&self, req: &Request<Incoming>) -> Result<()> {
+        // RFC 7230 §5.7.1: Detect request loops via Via header
+        if has_via_loop(req.headers()) {
+            return Err(ProxyError::ValidationFailed(
+                "Request loop detected via Via header".to_string(),
+            ));
+        }
+
         // Validate host if restrictions are configured
         if !self.config.security.allowed_hosts.is_empty() {
             let host = req
@@ -174,9 +184,21 @@ impl ProxyHandler {
         let peer_addr = self.peer_addr;
         let upgrade_timeout = std::time::Duration::from_secs(self.config.security.timeout_seconds);
 
+        // Acquire a semaphore permit for the tunnel's lifetime. The HTTP connection
+        // permit (in proxy/mod.rs) is released when serve_connection completes, but
+        // the spawned tunnel continues running — without its own permit, tunnels
+        // would bypass the connection limit.
+        let tunnel_permit = self
+            .semaphore
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| ProxyError::Tunnel("Max connections reached".to_string()))?;
+
         // Now send 200 Connection Established (we know the target is reachable)
         // Pass the pre-established connection to the tunnel handler
         tokio::spawn(async move {
+            let _tunnel_permit = tunnel_permit; // held for tunnel lifetime
+
             // Timeout the upgrade handshake to prevent holding the pre-established
             // target connection indefinitely if the client never completes the upgrade.
             match tokio::time::timeout(upgrade_timeout, hyper::upgrade::on(req)).await {
@@ -745,6 +767,22 @@ fn strip_host_port(host: &str) -> &str {
     host.rsplit_once(':').map(|(h, _)| h).unwrap_or(host)
 }
 
+/// RFC 7230 §5.7.1: Detect request loops by checking if the Via header
+/// already contains our pseudonym ("1.1 squiddish"). Prevents infinite
+/// forwarding loops when the proxy is accidentally configured to proxy to itself.
+fn has_via_loop(headers: &hyper::HeaderMap) -> bool {
+    for via in headers.get_all("via") {
+        if let Ok(value) = via.to_str() {
+            for entry in value.split(',') {
+                if entry.trim().eq_ignore_ascii_case("1.1 squiddish") {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
 /// Match a hostname against a pattern using exact match or subdomain suffix.
 /// Pattern "example.com" matches "example.com" and "sub.example.com"
 /// but NOT "evil-example.com". Strips port from host before matching.
@@ -1223,6 +1261,48 @@ mod tests {
         );
         assert_eq!(filtered.get("x-normal").unwrap(), "preserved");
         assert_eq!(filtered.get("content-type").unwrap(), "text/html");
+    }
+
+    #[test]
+    fn test_detect_via_loop() {
+        // "1.1 squiddish" in Via header should be detected as a loop
+        assert!(has_via_loop(&{
+            let mut h = hyper::HeaderMap::new();
+            h.insert("via", "1.1 squiddish".parse().unwrap());
+            h
+        }));
+
+        // Other proxy names should NOT be detected as a loop
+        assert!(!has_via_loop(&{
+            let mut h = hyper::HeaderMap::new();
+            h.insert("via", "1.1 other-proxy".parse().unwrap());
+            h
+        }));
+
+        // Multiple Via entries with squiddish among them
+        assert!(has_via_loop(&{
+            let mut h = hyper::HeaderMap::new();
+            h.insert("via", "1.1 other-proxy, 1.1 squiddish".parse().unwrap());
+            h
+        }));
+
+        // Multiple Via headers (append) with squiddish in second
+        assert!(has_via_loop(&{
+            let mut h = hyper::HeaderMap::new();
+            h.append("via", "1.1 first-proxy".parse().unwrap());
+            h.append("via", "1.1 squiddish".parse().unwrap());
+            h
+        }));
+
+        // No Via header at all
+        assert!(!has_via_loop(&hyper::HeaderMap::new()));
+
+        // Substring that contains "squiddish" but isn't the exact pseudonym
+        assert!(!has_via_loop(&{
+            let mut h = hyper::HeaderMap::new();
+            h.insert("via", "1.1 not-squiddish-proxy".parse().unwrap());
+            h
+        }));
     }
 
     #[test]

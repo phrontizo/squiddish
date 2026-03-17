@@ -81,12 +81,13 @@ impl ProxyServer {
                     let cache = self.cache.clone();
                     let config = config.clone();
                     let client = shared_client.clone();
+                    let sema = semaphore.clone();
 
                     tokio::spawn(async move {
                         let _permit = permit; // held until task completes
 
                         let io = TokioIo::new(stream);
-                        let handler = ProxyHandler::new(cache, config, client, peer_addr);
+                        let handler = ProxyHandler::new(cache, config, client, peer_addr, sema);
 
                         let service = service_fn(move |req| {
                             let handler = handler.clone();

@@ -159,20 +159,26 @@ impl ProxyHandler {
         .map_err(|e| ProxyError::Tunnel(format!("Failed to connect to {}: {}", target_addr, e)))?;
 
         let peer_addr = self.peer_addr;
+        let upgrade_timeout = std::time::Duration::from_secs(self.config.security.timeout_seconds);
 
         // Now send 200 Connection Established (we know the target is reachable)
         // Pass the pre-established connection to the tunnel handler
         tokio::spawn(async move {
-            match hyper::upgrade::on(req).await {
-                Ok(upgraded) => {
+            // Timeout the upgrade handshake to prevent holding the pre-established
+            // target connection indefinitely if the client never completes the upgrade.
+            match tokio::time::timeout(upgrade_timeout, hyper::upgrade::on(req)).await {
+                Ok(Ok(upgraded)) => {
                     if let Err(e) =
                         handle_connect_tunnel(upgraded, target_stream, peer_addr, target_addr).await
                     {
                         tracing::error!("Tunnel error: {}", e);
                     }
                 }
-                Err(e) => {
+                Ok(Err(e)) => {
                     tracing::error!("Upgrade error: {}", e);
+                }
+                Err(_) => {
+                    tracing::warn!("Upgrade timed out for {}, dropping connection", target_addr);
                 }
             }
         });
@@ -520,6 +526,11 @@ impl ProxyHandler {
             .map_err(ProxyError::from)?;
 
         *resp.headers_mut() = filter_headers(headers);
+        // RFC 7230 §5.7.1: proxies MUST add a Via header to responses
+        resp.headers_mut().append(
+            "via",
+            hyper::header::HeaderValue::from_static("1.1 squiddish"),
+        );
 
         Ok(resp)
     }
@@ -613,13 +624,12 @@ impl ProxyHandler {
                 <li>Cache system errors</li>
             </ul>
 
-            <p class="timestamp">Client: {} | Time: {}</p>
+            <p class="timestamp">Time: {}</p>
         </div>
     </div>
 </body>
 </html>"#,
             html_escape(&error.to_string()),
-            self.peer_addr,
             httpdate::fmt_http_date(SystemTime::now())
         );
 
@@ -779,6 +789,8 @@ fn build_streaming_response(
     for (name, value) in &meta.headers {
         builder = builder.header(name.as_str(), value.as_str());
     }
+    // RFC 7230 §5.7.1: proxies MUST add a Via header to responses
+    builder = builder.header("via", "1.1 squiddish");
     Ok(builder.body(Either::Right(StreamingBody::new(receiver, initial_chunks)))?)
 }
 
@@ -800,6 +812,8 @@ fn build_response_from_cache(entry: CacheEntry) -> Response<Either<Full<Bytes>, 
 
     // Add cache hit header
     builder = builder.header("x-cache", "HIT");
+    // RFC 7230 §5.7.1: proxies MUST add a Via header to responses
+    builder = builder.header("via", "1.1 squiddish");
 
     // Calculate remaining TTL
     if let Ok(elapsed) = entry.timestamp.elapsed() {

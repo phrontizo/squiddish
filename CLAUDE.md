@@ -57,6 +57,7 @@ RUST_LOG=debug cargo test
 | Module | Responsibility |
 |--------|---------------|
 | `config.rs` | Env var parsing with `from_vars()` for testability |
+| `error.rs` | Error types (`ProxyError` enum, `Result` alias) via `thiserror` |
 | `apt.rs` | APT request detection (host + path + file patterns) |
 | `cache/mod.rs` | `CacheEntry`, `TieredCache` (memory-first, disk-fallback, auto-promote) |
 | `cache/key.rs` | SHA-256 cache key with 2-level directory sharding |

@@ -448,8 +448,20 @@ impl ProxyHandler {
                 config.apt.other_ttl_seconds
             }
         } else {
-            // For non-APT, parse cache control headers
-            Self::parse_cache_control_headers(&response_headers).unwrap_or(config.cache.ttl_seconds)
+            // For non-APT, parse cache control headers.
+            // Some(0) = explicitly expired (max-age=0, invalid/past Expires) → don't cache.
+            // None = no cache headers → use default TTL.
+            match Self::parse_cache_control_headers(&response_headers) {
+                Some(0) => {
+                    tracing::debug!(
+                        "Response has zero/expired TTL, not caching: {}",
+                        cache_key.uri()
+                    );
+                    return Ok(());
+                }
+                Some(ttl) => ttl,
+                None => config.cache.ttl_seconds,
+            }
         };
 
         let entry = CacheEntry {
@@ -491,12 +503,13 @@ impl ProxyHandler {
         }
 
         // s-maxage takes precedence over max-age for shared caches (RFC 7234)
-        // Return None for zero TTL — entry would be immediately stale, wasting I/O
+        // Return Some(0) for zero TTL so the caller can distinguish "don't cache"
+        // from "no cache headers present" (None).
         if let Some(ttl) = s_maxage {
-            return if ttl > 0 { Some(ttl) } else { None };
+            return Some(ttl);
         }
         if let Some(ttl) = max_age {
-            return if ttl > 0 { Some(ttl) } else { None };
+            return Some(ttl);
         }
 
         // Check Expires header
@@ -504,11 +517,15 @@ impl ProxyHandler {
             if let Ok(expires_str) = expires.to_str() {
                 if let Ok(expires_time) = httpdate::parse_http_date(expires_str) {
                     let now = SystemTime::now();
-                    if let Ok(duration) = expires_time.duration_since(now) {
-                        return Some(duration.as_secs());
-                    }
+                    return match expires_time.duration_since(now) {
+                        Ok(duration) => Some(duration.as_secs()),
+                        Err(_) => Some(0), // Expires in the past
+                    };
                 }
             }
+            // RFC 7234 §5.3: invalid date formats MUST be interpreted as
+            // representing a time in the past (i.e., "already expired").
+            return Some(0);
         }
 
         None
@@ -1165,20 +1182,20 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_ttl_returns_none() {
+    fn test_zero_ttl_returns_zero() {
         let mut headers = hyper::HeaderMap::new();
 
-        // max-age=0 should return None (entry would be immediately stale)
+        // max-age=0 should return Some(0) so caller can skip caching
         headers.insert("cache-control", "max-age=0".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(0));
 
-        // s-maxage=0 should also return None
+        // s-maxage=0 should also return Some(0)
         headers.insert("cache-control", "s-maxage=0".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(0));
 
-        // s-maxage=0 with non-zero max-age: s-maxage takes precedence, returns None
+        // s-maxage=0 with non-zero max-age: s-maxage takes precedence, returns Some(0)
         headers.insert("cache-control", "max-age=300, s-maxage=0".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(0));
     }
 
     #[test]
@@ -1198,9 +1215,15 @@ mod tests {
             ttl_val
         );
 
-        // Expires in the past should return None
+        // Expires in the past should return Some(0) — explicitly expired
         headers.insert("expires", "Thu, 01 Jan 1970 00:00:00 GMT".parse().unwrap());
-        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), None);
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(0));
+
+        // Invalid Expires (e.g., "0") should return Some(0) per RFC 7234 §5.3:
+        // "A cache recipient MUST interpret invalid date formats [...] as
+        // representing a time in the past (i.e., 'already expired')."
+        headers.insert("expires", "0".parse().unwrap());
+        assert_eq!(ProxyHandler::parse_cache_control_headers(&headers), Some(0));
 
         // Cache-Control max-age takes precedence over Expires
         headers.insert("cache-control", "max-age=120".parse().unwrap());

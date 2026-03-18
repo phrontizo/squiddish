@@ -85,6 +85,10 @@ COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
 # Copy the statically linked binary
 COPY --from=builder /build/squiddish /squiddish
 
+# Copy license files
+COPY LICENCE /LICENCE
+COPY THIRD-PARTY-LICENSES /THIRD-PARTY-LICENSES
+
 # Environment variables with defaults
 # Size units: B, KB, MB, GB, TB (e.g., "1GB", "512MB", "2.5GB")
 # Time units: s, m, h, d (e.g., "5m", "2h", "7d")

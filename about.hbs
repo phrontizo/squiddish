@@ -1,0 +1,22 @@
+THIRD-PARTY SOFTWARE LICENSES
+==============================
+
+This file contains the license text for all third-party dependencies of this
+project. Dependencies are grouped by license type.
+
+{{#each overview}}
+  {{{name}}} ({{count}} crates)
+{{/each}}
+
+{{#each licenses}}
+================================================================================
+{{{name}}}
+================================================================================
+
+Used by:
+{{#each used_by}}
+  - {{{crate.name}}} {{{crate.version}}}
+{{/each}}
+
+{{{text}}}
+{{/each}}

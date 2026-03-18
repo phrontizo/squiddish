@@ -87,7 +87,7 @@ COPY --from=builder /build/squiddish /squiddish
 
 # Copy license files
 COPY LICENCE /LICENCE
-COPY THIRD-PARTY-LICENSES /THIRD-PARTY-LICENSES
+COPY THIRD-PARTY-NOTICES /THIRD-PARTY-NOTICES
 
 # Environment variables with defaults
 # Size units: B, KB, MB, GB, TB (e.g., "1GB", "512MB", "2.5GB")

@@ -8,4 +8,4 @@ config.toml
 *.log
 .idea/
 .claude/
-.ralph-memory.md
+.sync-exclude.lst
